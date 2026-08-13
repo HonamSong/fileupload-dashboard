@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"html"
 	"log"
 	"net"
 	"net/http"
@@ -201,13 +202,55 @@ func (s *Server) uiGate(next http.Handler) http.Handler {
 			ip := clientIP(r)
 			if s.store.isBlockedIP(ip) || !s.uiIPAllowed(ip) {
 				log.Printf("ui blocked: %s %s", ip, p)
-				httpError(w, http.StatusForbidden, "forbidden")
+				// Browser navigation → friendly page; API/curl → JSON error.
+				if r.Method == http.MethodGet && strings.Contains(r.Header.Get("Accept"), "text/html") {
+					s.serveBlockedPage(w, ip)
+				} else {
+					httpError(w, http.StatusForbidden, "forbidden")
+				}
 				return
 			}
 		}
 		next.ServeHTTP(w, r)
 	})
 }
+
+// serveBlockedPage renders a self-contained "access restricted" page (403).
+func (s *Server) serveBlockedPage(w http.ResponseWriter, ip string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusForbidden)
+	fmt.Fprintf(w, blockedPageHTML, html.EscapeString(ip))
+}
+
+const blockedPageHTML = `<!doctype html>
+<html lang="ko"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>접근 제한 · File Upload Dashboard</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+    background:#0f1220; color:#e7e9f3; font:15px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif; padding:24px; }
+  .box { background:#171a2b; border:1px solid #2a2f4a; border-radius:16px; padding:40px 36px;
+    max-width:440px; width:100%; text-align:center; box-shadow:0 20px 60px rgba(0,0,0,.5); }
+  .lock { font-size:44px; margin-bottom:10px; }
+  h1 { margin:0 0 10px; font-size:20px; }
+  p { margin:0 0 18px; color:#9aa0bd; }
+  .ip { display:inline-block; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:13px;
+    color:#e7e9f3; background:#0b0e1a; border:1px solid #2a2f4a; border-radius:8px; padding:8px 12px; }
+  .hint { margin-top:18px; font-size:12px; color:#6b7192; }
+</style></head>
+<body>
+  <div class="box">
+    <div class="lock">🔒</div>
+    <h1>접근이 제한되었습니다</h1>
+    <p>이 IP 주소에서는 대시보드에 접근할 수 없습니다.<br>관리자에게 접근 허용을 요청하세요.</p>
+    <div class="ip">요청 IP: %s</div>
+    <div class="hint">File Upload Dashboard · 대시보드 UI IP 접근 제어</div>
+  </div>
+</body></html>`
 
 // ipPass: block-list denies; a non-empty allow-list means allow-only.
 func (s *Server) ipPass(ip, allowKey, blockKey string) bool {

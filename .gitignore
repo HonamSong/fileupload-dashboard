@@ -17,6 +17,10 @@ dashboard
 *.pem
 *.key
 
+# Per-environment compose (copy from docker-compose.sample.yml). Sample is committed.
+docker-compose.yml
+docker-compose.override.yml
+
 # OS / editor noise
 .DS_Store
 Thumbs.db

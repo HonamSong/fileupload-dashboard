@@ -62,19 +62,26 @@
 
 ## 실행
 
+compose 파일은 `docker-compose.sample.yml`(커밋됨)을 복사해서 환경에 맞게 편집합니다. 실제 `docker-compose.yml`은 git에 올라가지 않습니다.
+
 ```bash
-docker compose up -d --build
+# 1) 샘플을 복사해서 도메인·비밀번호 등 편집
+cp docker-compose.sample.yml docker-compose.yml
+#    PUBLIC_BASE_URL, ADMIN_PASSWORD 등을 실제 값으로 수정
+
+# 2) 이미지 빌드 (태그 지정)
+docker build -t filemanage-dashboard:latest .
+
+# 3) 이미지 교체 방식으로 기동 (compose는 빌드된 이미지를 그대로 사용)
+docker-compose down
+docker-compose up -d
 ```
 
-- 접속: http://localhost:8180
+- 접속: http://localhost:8180 (또는 설정한 도메인)
 - 최초 로그인: `admin` / `ADMIN_PASSWORD`(기본 `admin`) → 로그인 후 프로필에서 비밀번호 변경
 - 데이터: `./data` (SQLite `app.db` + 업로드 파일 `files/`)
 
-compose 없이 docker만으로도 실행 가능:
-
-```bash
-docker build -t fileupload-dashboard . && docker run -d -p 8180:8180 -v "$PWD/data:/data" fileupload-dashboard
-```
+> 샘플에는 `IP_GUARD_DISABLE: "1"`이 포함되어 있어 **최초 기동 시 모든 IP 제한이 해제(복구 모드)**됩니다. 설정 > Server에서 IP 규칙을 구성한 뒤에는 이 값을 `"0"`으로 바꾸거나 제거하세요(그래야 재시작 후에도 제한이 유지됩니다). 현재 세션에만 적용하려면 복구 배너의 "지금 IP 제한 다시 적용" 버튼을 사용합니다.
 
 ---
 
@@ -90,6 +97,7 @@ docker build -t fileupload-dashboard . && docker run -d -p 8180:8180 -v "$PWD/da
 | TRASH_TTL_DAYS | 10 | 휴지통 보관 일수 |
 | MAX_UPLOAD_MB | 1024 | 파일당 최대 업로드 크기 |
 | PREVIEW_LIMIT_KB | 1024 | 텍스트 미리보기 최대 바이트 |
+| IP_GUARD_DISABLE | (없음) | `1`이면 모든 IP 제한(UI·API·차단 목록) 해제 — 잠금 복구/최초 기동용 |
 
 ---
 
@@ -156,7 +164,10 @@ docker compose stop && tar czf backup-$(date +%F).tgz data && docker compose sta
 ### 업데이트
 
 ```bash
-git pull && docker compose up -d --build
+git pull
+docker build -t filemanage-dashboard:latest .   # 새 이미지 빌드
+docker-compose down                              # 기존 컨테이너 정리
+docker-compose up -d                             # 새 이미지로 교체 기동
 ```
 
 UI(HTML/JS/CSS)는 `Cache-Control: no-cache`로 서빙되므로 배포 후 일반 새로고침으로 반영됩니다.

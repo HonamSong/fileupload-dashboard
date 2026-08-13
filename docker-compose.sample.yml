@@ -1,16 +1,19 @@
 services:
   dashboard:
     build: .
+    image: filemanage-dashboard:latest
+    container_name: filemanage-dashboard
     environment:
       LISTEN_ADDR: ":8180"
       DATA_DIR: "/data"
       # Public URL shown in the curl commands (change to your domain).
-      PUBLIC_BASE_URL: "http://localhost:8180"
+      PUBLIC_BASE_URL: "https://filemanage.dev.dsrv.com"
       TRASH_TTL_DAYS: "10"
       MAX_UPLOAD_MB: "1024"
       PREVIEW_LIMIT_KB: "1024"
       # Initial admin password (only used on first run; change it later in 설정).
       ADMIN_PASSWORD: "admin"
+      #IP_GUARD_DISABLE: "1"
     volumes:
       - ./data:/data
     ports:
