@@ -1,0 +1,29 @@
+# Runtime data: uploaded blobs + SQLite DB (contains user/API-key data — never commit)
+data/
+data_backup/
+*.db
+*.db-wal
+*.db-shm
+
+# Build artifacts
+src/dashboard
+src/fileupload-dashboard
+dashboard
+*.exe
+
+# Local env / secrets
+.env
+.env.*
+*.pem
+*.key
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# Logs / temp
+*.log
+tmp/

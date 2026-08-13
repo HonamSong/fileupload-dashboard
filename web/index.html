@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>File Upload Dashboard</title>
+<link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+<div id="loginOverlay" class="login-overlay">
+  <div class="login-box">
+    <h2>🔒 로그인</h2>
+    <p class="muted" style="font-size:13px;margin:0 0 14px">File Upload Dashboard</p>
+    <input type="text" id="loginUser" class="txt" style="width:100%;margin-bottom:8px" placeholder="아이디" onkeydown="if(event.key==='Enter')doLogin()">
+    <input type="password" id="loginPw" class="txt" style="width:100%" placeholder="비밀번호" onkeydown="if(event.key==='Enter')doLogin()">
+    <p id="loginErr" class="hidden" style="color:var(--danger);font-size:13px;margin:8px 0 0"></p>
+    <button class="btn" style="width:100%;margin-top:14px" onclick="doLogin()">로그인</button>
+  </div>
+</div>
+<div class="layout">
+<aside class="sidebar">
+  <h1>📁 File Upload<br>Dashboard</h1>
+  <nav class="tabs">
+    <button data-tab="files" class="active">파일</button>
+    <button data-tab="keys">API 키</button>
+    <button data-tab="trash" id="trashTab">휴지통</button>
+  </nav>
+  <div class="settings-area">
+    <button class="settingsbtn" data-tab="settings" onclick="selectTab('settings')">⚙ 설정</button>
+    <div class="sidebar-user">
+      <span id="sidebarUser" class="muted"></span>
+      <button class="btn danger small" onclick="doLogout()">로그아웃</button>
+    </div>
+  </div>
+</aside>
+<div class="content">
+
+<!-- FILES TAB -->
+<main id="tab-files">
+  <section class="card files-pane">
+    <div class="cardhead">
+      <h2>폴더</h2>
+      <button class="btn small editor-only" onclick="openFolderModal(currentFolder)">+ 폴더 생성</button>
+    </div>
+    <div id="folderTree" class="foldertree"></div>
+    <div class="cardhead" style="margin-top:18px">
+      <h2 style="margin:0">파일 목록 <span class="muted" style="font-size:13px;font-weight:400" id="curPathLabel">/</span></h2>
+      <span style="display:flex;gap:8px">
+        <button class="btn small editor-only" id="uploadBtn" onclick="openUploadModal()">＋ 업로드</button>
+        <button class="btn ghost small" id="downloadBtn" onclick="downloadSelected()" title="선택한 파일을 로컬 PC에 저장" disabled>⬇ 다운로드</button>
+        <button class="btn ghost small editor-only" id="bulkMoveBtn" onclick="bulkMove()" disabled>이동 (<span id="selCountMove">0</span>)</button>
+        <button class="btn danger small editor-only" id="bulkDeleteBtn" onclick="bulkDelete()" disabled>선택 삭제 (<span id="selCount">0</span>)</button>
+        <button class="btn ghost small" onclick="loadFolders(); loadFiles()" title="현재 폴더 새로고침">⟳ 새로고침</button>
+        <span id="filesUpdated" class="muted" style="font-size:12px;align-self:center"></span>
+      </span>
+    </div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th><input type="checkbox" id="selectAll" onclick="toggleSelectAll()"></th><th>이름</th><th>크기</th><th>체크섬 (SHA-256)</th><th>업로드</th><th>다운로드</th><th></th></tr></thead>
+        <tbody id="filesBody"></tbody>
+      </table>
+    </div>
+    <div id="filePager" class="pager"></div>
+  </section>
+
+  <div class="gutter" id="filesGutter" title="드래그해서 크기 조절"></div>
+
+  <div class="right-col">
+    <section class="card">
+      <div class="cardhead">
+        <h2>명령어 <span id="cmdName" class="muted"></span></h2>
+        <span class="naming" style="margin:0">
+          <span class="muted">URL:</span>
+          <label><input type="radio" name="cmdmode" value="uuid" checked onclick="setCmdMode('uuid')"> UUID</label>
+          <label><input type="radio" name="cmdmode" value="filename" onclick="setCmdMode('filename')"> 파일명</label>
+        </span>
+      </div>
+      <!-- 업로드 명령어 (현재 폴더 기준, editor 전용) -->
+      <div id="cmdUploadWrap" class="editor-only">
+        <div class="cmdlabel">
+          <span class="muted">업로드 명령어 (현재 폴더: <span id="cmdUploadPath">/</span>, 업로드용 키)</span>
+          <select id="uploadKeySel" class="txt scope-select" title="업로드 키 선택" onchange="updateUploadCmd()"></select>
+        </div>
+        <div class="curl">
+          <div id="cmdUpload" class="curlbox"></div>
+          <button class="btn ghost small" onclick="copyUploadCmd()">복사</button>
+        </div>
+      </div>
+
+      <!-- 다운로드/실행 명령어 (파일 선택 시) -->
+      <div style="margin-top:16px;border-top:1px solid var(--line);padding-top:14px">
+        <div class="muted" style="font-size:12px;margin-bottom:8px">다운로드/실행 명령어</div>
+        <div id="cmdEmpty" class="muted">파일을 선택하면 표시됩니다.</div>
+        <div id="curlWrap" class="hidden">
+          <div class="cmdlabel">
+            <span class="muted">다운로드 curl 명령어 (다운로드용 키)</span>
+            <select id="dlKeySel" class="txt scope-select" title="다운로드 키 선택" onchange="if(cmdFile)showCommands(cmdFile)"></select>
+          </div>
+          <div class="curl">
+            <div id="curlText" class="curlbox"></div>
+            <button class="btn ghost small" onclick="copyCurl()">복사</button>
+          </div>
+        </div>
+        <div id="execWrap" class="hidden" style="margin-top:12px">
+          <div class="muted" style="margin-bottom:6px">실행 명령어 (curl | bash, 위 다운로드 키 사용)</div>
+          <div class="curl">
+            <div id="execText" class="curlbox"></div>
+            <button class="btn ghost small" onclick="copyExec()">복사</button>
+          </div>
+        </div>
+      </div>
+    </section>
+    <section class="card">
+      <h2>미리보기 <span id="previewName" class="muted"></span></h2>
+      <div id="previewPane"><span class="muted">파일의 "미리보기"를 누르면 내용이 표시됩니다.</span></div>
+    </section>
+  </div>
+</main>
+
+<!-- TRASH TAB -->
+<main id="tab-trash" class="hidden">
+  <section class="card full">
+    <h2>휴지통 <span class="muted">(약 10일 후 자동 완전삭제)</span></h2>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>이름</th><th>크기</th><th>삭제 시각</th><th>완전삭제 예정</th><th></th></tr></thead>
+        <tbody id="trashBody"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<!-- KEYS TAB -->
+<main id="tab-keys" class="hidden">
+  <section class="card full">
+    <h2>API 키 발급</h2>
+    <div class="curl">
+      <input id="keyLabel" class="txt" placeholder="용도/라벨 (예: partner-A)" oninput="updateKeyBtn()" onkeydown="if(event.key==='Enter')createKey()">
+      <select id="keyKind" class="txt scope-select hidden" title="키 종류" onchange="updateKeyBtn()">
+        <option value="personal">개인용</option>
+        <option value="service">서비스용</option>
+      </select>
+      <select id="keyScope" class="txt scope-select">
+        <option value="download">Download</option>
+        <option value="upload">Upload</option>
+        <option value="all">Both</option>
+      </select>
+      <button class="btn" id="createKeyBtn" onclick="createKey()" disabled>키 생성</button>
+      <span id="keyDupMsg" class="hidden" style="color:var(--danger);font-size:13px">중복되었습니다</span>
+    </div>
+    <p class="muted" style="margin-top:8px">키는 <code>X-API-Key</code> 헤더로 사용합니다. 다운로드용은 <code>/d</code>·<code>/f</code>, 업로드용은 <code>/u</code>에서 동작합니다.</p>
+    <div style="overflow-x:auto;margin-top:12px">
+      <table>
+        <thead><tr><th>라벨</th><th>종류</th><th>키</th><th>생성</th><th>마지막 사용</th><th>사용 횟수</th><th>상태</th><th></th></tr></thead>
+        <tbody id="keysBody"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<!-- SETTINGS TAB -->
+<main id="tab-settings" class="hidden">
+  <section class="card full">
+    <h2>설정</h2>
+    <div class="subtabs">
+      <button id="subProfile" class="subtab active" onclick="selectSettingsSub('profile')">프로필</button>
+      <button id="subUsers" class="subtab hidden" onclick="selectSettingsSub('users')">사용자</button>
+      <button id="subLogs" class="subtab hidden" onclick="selectSettingsSub('logs')">접근 로그</button>
+      <button id="subServer" class="subtab hidden" onclick="selectSettingsSub('server')">Server</button>
+    </div>
+
+    <!-- 프로필 (모든 사용자) -->
+    <div id="settings-profile">
+      <p class="muted" style="font-size:13px;margin:4px 0 18px">로그인: <span id="settingsUser" style="color:var(--text)"></span></p>
+      <div class="muted" style="font-size:12px;margin-bottom:6px">비밀번호 변경</div>
+      <div class="curl" style="flex-wrap:wrap">
+        <input type="password" id="curPw" class="txt" placeholder="현재 비밀번호">
+        <input type="password" id="newPw" class="txt" placeholder="새 비밀번호 (4자 이상)" onkeydown="if(event.key==='Enter')changePassword()">
+        <button class="btn" onclick="changePassword()">변경</button>
+      </div>
+    </div>
+
+    <!-- 사용자 관리 (admin 전용) -->
+    <div id="settings-users" class="hidden">
+      <div class="muted" style="font-size:12px;margin-bottom:6px">사용자 관리</div>
+      <div class="curl" style="flex-wrap:wrap">
+        <input id="newUser" class="txt" placeholder="아이디">
+        <input type="password" id="newUserPw" class="txt" placeholder="비밀번호 (4자+)">
+        <select id="newUserRole" class="txt">
+          <option value="user">user</option>
+          <option value="view">view</option>
+          <option value="admin">admin</option>
+        </select>
+        <button class="btn" onclick="addUser()">추가</button>
+      </div>
+      <div style="overflow-x:auto;margin-top:12px">
+        <table>
+          <thead><tr><th>아이디</th><th>역할</th><th>생성</th><th>마지막 로그인</th><th></th></tr></thead>
+          <tbody id="usersBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- 접근 로그 (admin 전용) — 업로드/다운로드 통합 -->
+    <div id="settings-logs" class="hidden">
+      <div class="cardhead" style="flex-wrap:wrap;gap:8px 14px">
+        <div class="muted" style="font-size:12px">
+          접근 로그 (업로드 · 다운로드)
+          <span id="logsCount" style="margin-left:8px"></span>
+          <span id="logsUpdated" style="margin-left:8px"></span>
+        </div>
+        <span style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-left:auto">
+          <select id="logFilter" class="txt" onchange="filterLogs()">
+            <option value="">전체</option>
+            <option value="upload">업로드</option>
+            <option value="download">다운로드</option>
+            <option value="denied">거부됨</option>
+          </select>
+          <input id="logSearch" class="txt" placeholder="검색 (파일·사용자·IP·키·UA)" oninput="filterLogs()" style="flex:1;min-width:180px;max-width:320px">
+          <button class="btn ghost small" onclick="loadLogs()">새로고침</button>
+        </span>
+      </div>
+      <div style="overflow-x:auto">
+        <table class="sortable">
+          <thead><tr>
+            <th data-sort="accessed_at" onclick="sortLogs('accessed_at')">시각</th>
+            <th data-sort="action" onclick="sortLogs('action')">구분</th>
+            <th data-sort="status" onclick="sortLogs('status')">결과</th>
+            <th data-sort="file_name" onclick="sortLogs('file_name')">파일 / 사유</th>
+            <th data-sort="actor" onclick="sortLogs('actor')">사용자</th>
+            <th data-sort="key_label" onclick="sortLogs('key_label')">API 키</th>
+            <th data-sort="ip" onclick="sortLogs('ip')">IP</th>
+            <th data-sort="user_agent" onclick="sortLogs('user_agent')">User-Agent</th>
+          </tr></thead>
+          <tbody id="logsBody"></tbody>
+        </table>
+      </div>
+      <div id="logPager" class="pager"></div>
+    </div>
+
+    <!-- 서버 설정 (admin 전용) -->
+    <div id="settings-server" class="hidden">
+      <div class="muted" style="font-size:12px;margin-bottom:6px">Base URL (업로드/다운로드 명령어에 표시되는 주소)</div>
+      <div class="curl" style="flex-wrap:wrap">
+        <input id="srvBaseUrl" class="txt" style="min-width:340px" placeholder="http://localhost:8180" oninput="onServerInput()">
+      </div>
+      <div id="srvBaseErr" class="iperr"></div>
+      <p class="muted" style="font-size:12px;margin:2px 0 0">비워두면 기본값(<span id="srvEnvBase" style="color:var(--text)"></span>)이 사용됩니다. http:// 또는 https:// 형식이어야 합니다.</p>
+
+      <div class="muted" style="font-size:12px;margin:22px 0 6px">IP 접근 제어 (다운로드 /d, /f · 업로드 /u 엔드포인트에 적용)</div>
+      <div class="iplists">
+        <div class="ipbox allow">
+          <div class="ipbox-head">✓ Allow (허용 목록)</div>
+          <p class="muted" style="font-size:12px;margin:0 0 8px">비어 있으면 모든 IP 허용. 입력하면 목록의 IP만 허용됩니다.</p>
+          <div class="ipwrap">
+            <pre id="srvIpAllowHL" class="iparea iphl" aria-hidden="true"></pre>
+            <textarea id="srvIpAllow" class="txt iparea live" wrap="off" spellcheck="false" oninput="onServerInput()" onscroll="syncIpScroll(this)" placeholder="한 줄에 하나씩. 단일 IP 또는 CIDR&#10;예)&#10;203.0.113.7&#10;10.0.0.0/8"></textarea>
+          </div>
+          <div id="srvIpAllowErr" class="iperr"></div>
+        </div>
+        <div class="ipbox block">
+          <div class="ipbox-head">✕ Block (차단 목록)</div>
+          <p class="muted" style="font-size:12px;margin:0 0 8px">목록의 IP는 항상 차단됩니다 (허용 목록보다 우선).</p>
+          <div class="ipwrap">
+            <pre id="srvIpBlockHL" class="iparea iphl" aria-hidden="true"></pre>
+            <textarea id="srvIpBlock" class="txt iparea live" wrap="off" spellcheck="false" oninput="onServerInput()" onscroll="syncIpScroll(this)" placeholder="한 줄에 하나씩. 단일 IP 또는 CIDR&#10;예)&#10;198.51.100.23&#10;192.0.2.0/24"></textarea>
+          </div>
+          <div id="srvIpBlockErr" class="iperr"></div>
+        </div>
+      </div>
+
+      <div class="muted" style="font-size:12px;margin:22px 0 6px">자동 차단 (잘못된 API 키 반복 시도 시)</div>
+      <div class="curl" style="flex-wrap:wrap;align-items:center;gap:12px">
+        <label style="display:inline-flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="srvAutoBlock" onchange="onServerInput()" style="width:16px;height:16px;accent-color:var(--accent)">
+          <span>자동 차단 사용</span>
+        </label>
+        <span class="muted" style="font-size:13px">임계값</span>
+        <input id="srvAbThreshold" type="number" min="1" max="1000" class="txt" style="width:80px" oninput="onServerInput()">
+        <span class="muted" style="font-size:13px">회 /</span>
+        <input id="srvAbWindow" type="number" min="1" max="1440" class="txt" style="width:80px" oninput="onServerInput()">
+        <span class="muted" style="font-size:13px">분 이내</span>
+      </div>
+      <p class="muted" style="font-size:12px;margin:6px 0 0">해당 IP가 지정한 시간 안에 임계값 이상 잘못된 키로 시도하면 자동으로 차단 목록에 추가됩니다.</p>
+      <div id="srvBlockedWrap" style="margin-top:10px"></div>
+
+      <div style="margin-top:16px;display:flex;justify-content:space-between;align-items:center;gap:12px">
+        <p class="muted" style="font-size:12px;margin:0">주의: 관리자 대시보드/로그인에는 적용되지 않아 잠기지 않습니다. 도커 환경에서는 클라이언트 IP가 게이트웨이로 보일 수 있습니다.</p>
+        <span style="display:flex;gap:8px;align-items:center;flex-shrink:0">
+          <span id="srvSaved" class="muted" style="font-size:12px"></span>
+          <button id="srvSaveBtn" class="btn" onclick="saveServer()">저장</button>
+        </span>
+      </div>
+    </div>
+  </section>
+</main>
+
+</div><!-- /content -->
+</div><!-- /layout -->
+
+<div id="modal" class="modal-backdrop hidden">
+  <div class="modal">
+    <h3 id="modalTitle">확인</h3>
+    <p id="modalMsg"></p>
+    <div class="actions split">
+      <button class="btn danger" id="modalExtra" style="display:none">강제 삭제</button>
+      <span style="display:flex;gap:8px;margin-left:auto">
+        <button class="btn ghost" id="modalCancel">취소</button>
+        <button class="btn danger" id="modalOk">확인</button>
+      </span>
+    </div>
+  </div>
+</div>
+
+<div id="moveModal" class="modal-backdrop hidden">
+  <div class="modal">
+    <h3>파일 이동</h3>
+    <p id="moveMsg" class="muted"></p>
+    <div class="muted" style="margin-bottom:6px;font-size:12px">대상 폴더</div>
+    <select id="moveTarget" class="txt" style="width:100%"></select>
+    <div class="actions split" style="margin-top:20px">
+      <button class="btn ghost" id="moveNewFolder">+ 새 폴더</button>
+      <span style="display:flex;gap:8px">
+        <button class="btn ghost" id="moveCancel">취소</button>
+        <button class="btn" id="moveOk">이동</button>
+      </span>
+    </div>
+  </div>
+</div>
+
+<div id="folderModal" class="modal-backdrop hidden">
+  <div class="modal">
+    <h3>폴더 생성</h3>
+    <div class="muted" style="font-size:12px;margin-bottom:6px">상위 폴더</div>
+    <select id="folderParent" class="txt" style="width:100%"></select>
+    <div class="muted" style="font-size:12px;margin:12px 0 6px">새 폴더 이름</div>
+    <input id="folderName" class="txt" style="width:100%" placeholder="예: script">
+    <p class="muted" id="folderPreview" style="margin-top:10px;font-size:12px"></p>
+    <div class="actions" style="margin-top:16px">
+      <button class="btn ghost" id="folderCancel">취소</button>
+      <button class="btn" id="folderOk">생성</button>
+    </div>
+  </div>
+</div>
+
+<div id="uploadModal" class="modal-backdrop hidden">
+  <div class="modal">
+    <h3>파일 업로드</h3>
+    <p class="muted" style="font-size:12px;margin-bottom:10px">업로드 위치: <span id="uploadPath">/</span></p>
+    <div id="uploadDrop" class="drop">파일을 여기로 드래그하거나 클릭해서 선택</div>
+    <input type="file" id="uploadInput" class="hidden" multiple>
+    <div id="uploadList" class="uploadlist"></div>
+    <div id="uploadSummary" class="uploadsummary hidden">
+      <span><b id="uploadCount">0</b>개 첨부 · 합계 <b id="uploadTotal">0 B</b></span>
+      <span id="uploadLimit" class="muted"></span>
+    </div>
+    <div style="margin-top:14px">
+      <div class="muted" style="font-size:12px;margin-bottom:6px">curl 업로드 명령어 (API 키 필요, user/admin 키만)</div>
+      <div class="curl">
+        <div id="uploadCurl" class="curlbox"></div>
+        <button class="btn ghost small" onclick="copyText($('#uploadCurl').textContent)">복사</button>
+      </div>
+    </div>
+    <div class="actions" style="margin-top:16px">
+      <button class="btn ghost" id="uploadCancel">취소</button>
+      <button class="btn" id="uploadOk">업로드</button>
+    </div>
+  </div>
+</div>
+
+<div id="promptModal" class="modal-backdrop hidden">
+  <div class="modal">
+    <h3 id="promptTitle">입력</h3>
+    <p id="promptMsg" class="muted" style="font-size:13px;margin:0 0 10px"></p>
+    <input id="promptInput" class="txt" style="width:100%">
+    <div class="actions" style="margin-top:18px">
+      <button class="btn ghost" id="promptCancel">취소</button>
+      <button class="btn" id="promptOk">확인</button>
+    </div>
+  </div>
+</div>
+
+<!-- 폴더 권한 모달 (admin 전용) -->
+<div id="folderPermModal" class="modal-backdrop hidden">
+  <div class="modal">
+    <h3>폴더 권한 <span id="fpPath" class="muted"></span></h3>
+    <p class="muted" style="font-size:12px;margin:0 0 12px">owner/admin은 항상 전체 접근입니다. 지정한 권한은 하위 폴더까지 상속됩니다. user는 기본 '읽기'(폴더별로 쓰기 상향 또는 차단 가능), view는 기본 '차단'(폴더별 읽기 부여)입니다.</p>
+    <div id="fpList" style="display:flex;flex-direction:column;gap:8px;max-height:340px;overflow:auto"></div>
+    <div class="actions" style="margin-top:18px">
+      <button class="btn ghost" onclick="closeFolderPerms()">닫기</button>
+    </div>
+  </div>
+</div>
+
+<!-- 사용자 편집 모달: 비밀번호 변경(위) + 역할 변경(아래) -->
+<div id="userEditModal" class="modal-backdrop hidden">
+  <div class="modal">
+    <h3><span id="ueName"></span> 변경</h3>
+
+    <div class="ue-section">
+      <div class="muted" style="font-size:12px;margin-bottom:6px">비밀번호 변경</div>
+      <div class="curl" style="flex-wrap:wrap">
+        <input type="password" id="uePw" class="txt" style="flex:1;min-width:200px" placeholder="새 비밀번호 (4자 이상)">
+        <button class="btn" id="uePwBtn" onclick="ueApplyPassword()">비밀번호 변경</button>
+      </div>
+    </div>
+
+    <div class="ue-section" id="ueRoleSection" style="margin-top:16px;border-top:1px solid var(--line);padding-top:14px">
+      <div class="muted" style="font-size:12px;margin-bottom:6px">역할 변경</div>
+      <div class="curl" style="flex-wrap:wrap">
+        <select id="ueRole" class="txt scope-select">
+          <option value="user">user</option>
+          <option value="view">view</option>
+          <option value="admin">admin</option>
+        </select>
+        <button class="btn" id="ueRoleBtn" onclick="ueApplyRole()">역할 변경</button>
+      </div>
+      <p id="ueRoleNote" class="muted" style="font-size:12px;margin:8px 0 0"></p>
+    </div>
+
+    <div class="actions" style="margin-top:20px">
+      <button class="btn ghost" id="ueClose" onclick="closeUserEdit()">닫기</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script src="/js/util.js"></script>
+<script src="/js/auth.js"></script>
+<script src="/js/settings.js"></script>
+<script src="/js/folders.js"></script>
+<script src="/js/files.js"></script>
+<script src="/js/trash.js"></script>
+<script src="/js/keys.js"></script>
+<script src="/js/main.js"></script>
+</body>
+</html>

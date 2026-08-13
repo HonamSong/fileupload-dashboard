@@ -1,0 +1,18 @@
+services:
+  dashboard:
+    build: .
+    environment:
+      LISTEN_ADDR: ":8180"
+      DATA_DIR: "/data"
+      # Public URL shown in the curl commands (change to your domain).
+      PUBLIC_BASE_URL: "http://localhost:8180"
+      TRASH_TTL_DAYS: "10"
+      MAX_UPLOAD_MB: "1024"
+      PREVIEW_LIMIT_KB: "1024"
+      # Initial admin password (only used on first run; change it later in 설정).
+      ADMIN_PASSWORD: "admin"
+    volumes:
+      - ./data:/data
+    ports:
+      - "8180:8180"
+    restart: unless-stopped
