@@ -85,7 +85,9 @@ function validateServerForm() {
   $("#srvBaseErr").textContent = baseOk ? "" : "http:// 또는 https:// 형식의 URL이어야 합니다";
   const badAllow = renderIpHighlight("srvIpAllow", "srvIpAllowHL", "srvIpAllowErr");
   const badBlock = renderIpHighlight("srvIpBlock", "srvIpBlockHL", "srvIpBlockErr");
-  const valid = baseOk && badAllow === 0 && badBlock === 0;
+  const badUiA = renderIpHighlight("srvUiAllow", "srvUiAllowHL", "srvUiAllowErr");
+  const badUiB = renderIpHighlight("srvUiBlock", "srvUiBlockHL", "srvUiBlockErr");
+  const valid = baseOk && badAllow === 0 && badBlock === 0 && badUiA === 0 && badUiB === 0;
   const btn = $("#srvSaveBtn");
   if (btn) btn.disabled = !valid;
   return valid;
@@ -106,6 +108,8 @@ function currentServerVals() {
     base_url: $("#srvBaseUrl").value.trim(),
     ip_allow: $("#srvIpAllow").value,
     ip_block: $("#srvIpBlock").value,
+    ui_allow: $("#srvUiAllow").value,
+    ui_block: $("#srvUiBlock").value,
     auto_block: $("#srvAutoBlock").checked ? "on" : "off",
     ab_threshold: $("#srvAbThreshold").value,
     ab_window: $("#srvAbWindow").value,
@@ -134,10 +138,13 @@ async function loadServer() {
     $("#srvEnvBase").textContent = s.env_base_url || "";
     $("#srvIpAllow").value = s.ip_allow || "";
     $("#srvIpBlock").value = s.ip_block || "";
+    $("#srvUiAllow").value = s.ui_allow || "";
+    $("#srvUiBlock").value = s.ui_block || "";
     $("#srvAutoBlock").checked = s.auto_block === "on";
     $("#srvAbThreshold").value = s.auto_block_threshold || 10;
     $("#srvAbWindow").value = s.auto_block_window || 10;
     renderBlockedIPs(s.blocked_ips || []);
+    renderGuardBanner(s);
     serverBaseline = currentServerVals();
     serverDirty = false;
     validateServerForm();
@@ -161,6 +168,28 @@ async function unblockIP(ip) {
     renderBlockedIPs(s.blocked_ips || []);
   } catch (e) { toast("실패: " + e.message); }
 }
+// Recovery banner: shown when IP_GUARD_DISABLE has bypassed all IP limits.
+function renderGuardBanner(s) {
+  const el = $("#srvGuardBanner");
+  if (!s.guard_recovery) { el.classList.add("hidden"); el.innerHTML = ""; return; }
+  el.classList.remove("hidden");
+  el.innerHTML = `
+    <div style="border:1px solid rgba(255,207,107,.5);background:rgba(255,207,107,.08);border-radius:10px;padding:12px 14px;margin-bottom:16px">
+      <div style="color:#ffcf6b;font-weight:600;margin-bottom:4px">복구 모드 — 모든 IP 제한이 해제되어 있습니다</div>
+      <p class="muted" style="font-size:12px;margin:0 0 10px">IP_GUARD_DISABLE 환경변수로 UI·API IP 제한과 차단 목록이 모두 무시되는 중입니다.
+        허용 목록을 본인 IP로 고쳐 저장한 뒤, 아래 버튼으로 <b>재시작 없이</b> 제한을 다시 켜세요. (env 변수는 다음 배포 때 제거)</p>
+      <button class="btn" onclick="rearmGuard()">지금 IP 제한 다시 적용</button>
+    </div>`;
+}
+async function rearmGuard() {
+  if (!await confirmDialog("저장된 IP 규칙으로 접근 제한을 다시 적용합니다. 허용 목록에 본인 IP가 포함되어 있는지 확인하세요. 계속할까요?",
+    { title: "IP 제한 다시 적용", okLabel: "적용", danger: false })) return;
+  try {
+    await api("POST", "/api/server/rearm");
+    toast("IP 제한이 다시 적용되었습니다");
+    loadServer();
+  } catch (e) { toast("실패: " + e.message); }
+}
 async function saveServer() {
   if (!validateServerForm()) { toast("잘못된 IP/CIDR 또는 URL이 있습니다"); return; }
   try {
@@ -168,6 +197,8 @@ async function saveServer() {
       base_url: $("#srvBaseUrl").value.trim(),
       ip_allow: $("#srvIpAllow").value,
       ip_block: $("#srvIpBlock").value,
+      ui_allow: $("#srvUiAllow").value,
+      ui_block: $("#srvUiBlock").value,
       auto_block: $("#srvAutoBlock").checked ? "on" : "off",
       auto_block_threshold: +$("#srvAbThreshold").value || 10,
       auto_block_window: +$("#srvAbWindow").value || 10,

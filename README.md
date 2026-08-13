@@ -126,6 +126,25 @@ curl -H "X-API-Key: fk_xxxxxxxx" -F "file=@./local.txt" -F "folder=/docs" http:/
 
 > ⚠️ 8180을 직접 노출하면 클라이언트가 `X-Forwarded-For`를 위조해 IP 차단/허용을 우회하거나 로그 IP를 속일 수 있습니다. 반드시 신뢰된 프록시 뒤에 두세요.
 
+### IP 접근 제한 (설정 > Server)
+
+두 가지 IP 접근 제어를 각각 Allow/Block 목록(단일 IP 또는 CIDR)으로 설정합니다.
+
+- **① API 엔드포인트**: curl 다운로드/업로드(`/d`, `/f`, `/u`)에 적용.
+- **② 대시보드 UI**: 로그인·관리 화면에만 적용. **API 키 접근은 제외**되므로 UI만 사내/VPN으로 잠그고 다운로드 API는 열어둘 수 있습니다.
+- **자동 차단**: 같은 IP가 지정 시간 안에 잘못된 키로 임계값 이상 시도하면 자동 차단. 접근 로그의 IP에서 수동 차단/해제도 가능.
+
+### 잠금 복구 (IP_GUARD_DISABLE)
+
+UI 허용 목록에 본인 IP를 넣지 않으면 대시보드에서 잠깁니다(로그인조차 불가). 복구 절차:
+
+1. 컨테이너에 환경변수 `IP_GUARD_DISABLE=1`을 주고 재시작 → **모든 IP 제한(UI·API·차단 목록)이 일시 해제**되어 대시보드에 진입 가능.
+2. 로그인 후 설정 > Server에서 UI 허용 목록을 본인 IP로 수정하고 저장.
+3. 상단 복구 배너의 **"지금 IP 제한 다시 적용"** 버튼 클릭 → **재시작 없이** 저장된 규칙으로 즉시 재적용.
+4. 환경변수 `IP_GUARD_DISABLE`은 편할 때(다음 배포 시) 제거.
+
+> 도커 포트매핑만 쓰면 클라이언트 IP가 게이트웨이로 보입니다. 실제 방문자 IP로 제한하려면 프록시에서 `X-Forwarded-For`를 전달하세요.
+
 ### 데이터 백업
 
 모든 상태는 `./data`에 있습니다. WAL 정합성을 위해 컨테이너를 멈추고 복사하세요.
@@ -143,32 +162,6 @@ git pull && docker compose up -d --build
 UI(HTML/JS/CSS)는 `Cache-Control: no-cache`로 서빙되므로 배포 후 일반 새로고침으로 반영됩니다.
 
 ---
-
-## 구조
-
-```
-src/                   Go 소스 (go.mod)
-  main.go              서버 기동·설정·라우팅·Server 구조체
-  db.go                SQLite 스키마·마이그레이션·쿼리
-  auth.go              로그인/세션/역할·미들웨어(requireAuth/Editor/Admin/Owner)
-  users.go             사용자 관리 (owner/admin)
-  permissions.go       폴더별 접근 제어(ACL)
-  files.go             업로드·목록·폴더·미리보기·삭제/복구/이동
-  download.go          공개 다운로드(/d,/f)·세션 다운로드·zip·거부 로깅
-  keys.go              API 키 관리
-  keysign.go           API 키 HMAC 서명·검증
-  server_settings.go   Base URL·IP allow/block·자동 차단·IP 게이트
-  logs.go              접근 로그 조회
-  maintenance.go       체크섬 백필·휴지통 purge 루프
-  index.go             UI/정적 파일 서빙(no-cache)
-  util.go              공용 헬퍼(clientIP, previewKind 등)
-web/
-  index.html           마크업
-  css/app.css          스타일
-  js/                  util·auth·settings·folders·files·trash·keys·main
-docker-compose.yml     dashboard 단일 서비스 (8180)
-Dockerfile             멀티스테이지 빌드 (CGO_ENABLED=0, alpine 런타임)
-```
 
 ## 기술 스택
 

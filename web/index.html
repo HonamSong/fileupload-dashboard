@@ -240,6 +240,7 @@
 
     <!-- 서버 설정 (admin 전용) -->
     <div id="settings-server" class="hidden">
+      <div id="srvGuardBanner" class="hidden"></div>
       <div class="muted" style="font-size:12px;margin-bottom:6px">Base URL (업로드/다운로드 명령어에 표시되는 주소)</div>
       <div class="curl" style="flex-wrap:wrap">
         <input id="srvBaseUrl" class="txt" style="min-width:340px" placeholder="http://localhost:8180" oninput="onServerInput()">
@@ -247,7 +248,7 @@
       <div id="srvBaseErr" class="iperr"></div>
       <p class="muted" style="font-size:12px;margin:2px 0 0">비워두면 기본값(<span id="srvEnvBase" style="color:var(--text)"></span>)이 사용됩니다. http:// 또는 https:// 형식이어야 합니다.</p>
 
-      <div class="muted" style="font-size:12px;margin:22px 0 6px">IP 접근 제어 (다운로드 /d, /f · 업로드 /u 엔드포인트에 적용)</div>
+      <div class="muted" style="font-size:12px;margin:22px 0 6px">① API 엔드포인트 IP 접근 제어 (curl 다운로드 /d, /f · 업로드 /u)</div>
       <div class="iplists">
         <div class="ipbox allow">
           <div class="ipbox-head">✓ Allow (허용 목록)</div>
@@ -268,6 +269,29 @@
           <div id="srvIpBlockErr" class="iperr"></div>
         </div>
       </div>
+
+      <div class="muted" style="font-size:12px;margin:22px 0 6px">② 대시보드 UI IP 접근 제어 (로그인·관리 화면에만 적용, API 키 접근 제외)</div>
+      <div class="iplists">
+        <div class="ipbox allow">
+          <div class="ipbox-head">✓ Allow (허용 목록)</div>
+          <p class="muted" style="font-size:12px;margin:0 0 8px">비어 있으면 모든 IP 허용. 입력하면 목록의 IP만 대시보드에 접근할 수 있습니다.</p>
+          <div class="ipwrap">
+            <pre id="srvUiAllowHL" class="iparea iphl" aria-hidden="true"></pre>
+            <textarea id="srvUiAllow" class="txt iparea live" wrap="off" spellcheck="false" oninput="onServerInput()" onscroll="syncIpScroll(this)" placeholder="한 줄에 하나씩. 단일 IP 또는 CIDR&#10;예) 사내/VPN 대역&#10;10.0.0.0/8"></textarea>
+          </div>
+          <div id="srvUiAllowErr" class="iperr"></div>
+        </div>
+        <div class="ipbox block">
+          <div class="ipbox-head">✕ Block (차단 목록)</div>
+          <p class="muted" style="font-size:12px;margin:0 0 8px">목록의 IP는 대시보드 접근이 차단됩니다.</p>
+          <div class="ipwrap">
+            <pre id="srvUiBlockHL" class="iparea iphl" aria-hidden="true"></pre>
+            <textarea id="srvUiBlock" class="txt iparea live" wrap="off" spellcheck="false" oninput="onServerInput()" onscroll="syncIpScroll(this)" placeholder="한 줄에 하나씩. 단일 IP 또는 CIDR"></textarea>
+          </div>
+          <div id="srvUiBlockErr" class="iperr"></div>
+        </div>
+      </div>
+      <p class="muted" style="font-size:12px;margin:6px 0 0;color:#ffcf6b">⚠ 주의: UI 허용 목록에 본인 IP를 넣지 않으면 대시보드에서 잠깁니다. 잠겼을 때는 컨테이너에 환경변수 <span style="color:var(--text)">IP_GUARD_DISABLE=1</span> 을 주고 재시작하면 <b>모든 IP 제한(UI 접근 제한 + API 엔드포인트 제한 + 자동/수동 차단 목록)</b>이 일시적으로 전부 해제됩니다. 그 상태로 로그인해 허용 목록을 고쳐 저장한 뒤, 이 화면 상단의 <b>"지금 IP 제한 다시 적용"</b> 버튼으로 재시작 없이 제한을 다시 켤 수 있습니다. (env 변수는 편할 때 제거) (도커 환경에서는 클라이언트 IP가 게이트웨이로 보일 수 있으니 반드시 프록시에서 X-Forwarded-For 전달)</p>
 
       <div class="muted" style="font-size:12px;margin:22px 0 6px">자동 차단 (잘못된 API 키 반복 시도 시)</div>
       <div class="curl" style="flex-wrap:wrap;align-items:center;gap:12px">

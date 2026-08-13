@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -17,6 +18,7 @@ type Config struct {
 	TrashTTL      time.Duration // how long trashed files live before purge
 	MaxUpload     int64         // max upload size in bytes
 	PreviewLimit  int64         // max bytes returned for text/image preview
+	IPGuardOff    bool          // escape hatch: disable all IP restrictions (lockout recovery)
 }
 
 type Server struct {
@@ -25,8 +27,16 @@ type Server struct {
 	filesDir string
 	keyHMAC  []byte // secret for signing/verifying API keys
 
-	failMu   sync.Mutex             // guards keyFails
-	keyFails map[string][]time.Time // per-IP recent bad-key attempts (auto-block)
+	failMu     sync.Mutex             // guards keyFails
+	keyFails   map[string][]time.Time // per-IP recent bad-key attempts (auto-block)
+	guardReArm atomic.Bool            // runtime re-enable of IP guards despite IP_GUARD_DISABLE
+}
+
+// guardOff reports whether all IP restrictions are currently bypassed. The env
+// escape hatch turns them off; the runtime re-arm (settings button) turns them
+// back on without a restart.
+func (s *Server) guardOff() bool {
+	return s.cfg.IPGuardOff && !s.guardReArm.Load()
 }
 
 func main() {
@@ -37,6 +47,7 @@ func main() {
 		TrashTTL:      time.Duration(envInt("TRASH_TTL_DAYS", 10)) * 24 * time.Hour,
 		MaxUpload:     int64(envInt("MAX_UPLOAD_MB", 1024)) * 1024 * 1024,
 		PreviewLimit:  int64(envInt("PREVIEW_LIMIT_KB", 1024)) * 1024,
+		IPGuardOff:    env("IP_GUARD_DISABLE", "") == "1" || env("IP_GUARD_DISABLE", "") == "true",
 	}
 
 	filesDir := filepath.Join(cfg.DataDir, "files")
@@ -104,6 +115,7 @@ func main() {
 	mux.HandleFunc("POST /api/server", owner(srv.handleSetServer))
 	mux.HandleFunc("POST /api/server/block", owner(srv.handleBlockIP))     // manually block an IP
 	mux.HandleFunc("POST /api/server/unblock", owner(srv.handleUnblockIP)) // remove a blocked IP
+	mux.HandleFunc("POST /api/server/rearm", owner(srv.handleRearmGuard))  // re-enable IP guards (no restart)
 	// Public download endpoint (requires X-API-Key). The optional trailing
 	// {name} segment is cosmetic (lets curl -O save with a readable filename).
 	// gate = IP allow/block enforcement on the externally-exposed endpoints.
@@ -116,7 +128,7 @@ func main() {
 	mux.HandleFunc("POST /u", gate(srv.handleAPIUpload))
 
 	log.Printf("listening on %s (data=%s, trashTTL=%s)", cfg.ListenAddr, cfg.DataDir, cfg.TrashTTL)
-	if err := http.ListenAndServe(cfg.ListenAddr, mux); err != nil {
+	if err := http.ListenAndServe(cfg.ListenAddr, srv.uiGate(mux)); err != nil {
 		log.Fatal(err)
 	}
 }

@@ -22,6 +22,8 @@ func (s *Server) handleGetServer(w http.ResponseWriter, r *http.Request) {
 	base, _ := s.store.getSetting("base_url")
 	allow, _ := s.store.getSetting("ip_allow")
 	block, _ := s.store.getSetting("ip_block")
+	uiAllow, _ := s.store.getSetting("ui_allow")
+	uiBlock, _ := s.store.getSetting("ui_block")
 	autoBlock, _ := s.store.getSetting("auto_block")
 	if autoBlock != "on" {
 		autoBlock = "off"
@@ -29,12 +31,23 @@ func (s *Server) handleGetServer(w http.ResponseWriter, r *http.Request) {
 	blocked, _ := s.store.listBlockedIPs()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"base_url": base, "ip_allow": allow, "ip_block": block,
+		"ui_allow": uiAllow, "ui_block": uiBlock,
 		"env_base_url":         strings.TrimRight(s.cfg.PublicBaseURL, "/"),
 		"auto_block":           autoBlock,
 		"auto_block_threshold": s.settingInt("auto_block_threshold", 10),
 		"auto_block_window":    s.settingInt("auto_block_window", 10),
 		"blocked_ips":          blocked,
+		"guard_recovery":       s.guardOff(),     // true = all IP limits currently bypassed
+		"guard_env":            s.cfg.IPGuardOff, // IP_GUARD_DISABLE is set on the container
 	})
+}
+
+// handleRearmGuard re-enables IP restrictions at runtime (no restart), used to
+// leave recovery mode after fixing the allow list.
+func (s *Server) handleRearmGuard(w http.ResponseWriter, r *http.Request) {
+	s.guardReArm.Store(true)
+	log.Printf("IP guards re-armed at runtime (enforcement on)")
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "guard_recovery": s.guardOff()})
 }
 
 func (s *Server) handleSetServer(w http.ResponseWriter, r *http.Request) {
@@ -42,12 +55,14 @@ func (s *Server) handleSetServer(w http.ResponseWriter, r *http.Request) {
 		BaseURL            string `json:"base_url"`
 		IPAllow            string `json:"ip_allow"`
 		IPBlock            string `json:"ip_block"`
+		UIAllow            string `json:"ui_allow"`
+		UIBlock            string `json:"ui_block"`
 		AutoBlock          string `json:"auto_block"`
 		AutoBlockThreshold int    `json:"auto_block_threshold"`
 		AutoBlockWindow    int    `json:"auto_block_window"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
-	for _, list := range []string{body.IPAllow, body.IPBlock} {
+	for _, list := range []string{body.IPAllow, body.IPBlock, body.UIAllow, body.UIBlock} {
 		if bad := invalidIPEntry(list); bad != "" {
 			httpError(w, http.StatusBadRequest, "잘못된 IP/CIDR: %s", bad)
 			return
@@ -56,6 +71,8 @@ func (s *Server) handleSetServer(w http.ResponseWriter, r *http.Request) {
 	_ = s.store.setSetting("base_url", strings.TrimRight(strings.TrimSpace(body.BaseURL), "/"))
 	_ = s.store.setSetting("ip_allow", strings.TrimSpace(body.IPAllow))
 	_ = s.store.setSetting("ip_block", strings.TrimSpace(body.IPBlock))
+	_ = s.store.setSetting("ui_allow", strings.TrimSpace(body.UIAllow))
+	_ = s.store.setSetting("ui_block", strings.TrimSpace(body.UIBlock))
 	autoBlock := "off"
 	if body.AutoBlock == "on" {
 		autoBlock = "on"
@@ -157,12 +174,12 @@ func (s *Server) recordKeyFailure(ip string) {
 	}
 }
 
-// ipGate enforces the configured IP allow/block rules and auto-blocks on public endpoints.
+// ipGate enforces the API-endpoint (/d, /f, /u) IP rules + auto-block.
 func (s *Server) ipGate(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ip := clientIP(r)
-		if s.store.isBlockedIP(ip) || !s.ipAllowed(ip) {
-			log.Printf("ip blocked: %s %s", ip, r.URL.Path)
+		if !s.guardOff() && (s.store.isBlockedIP(ip) || !s.ipAllowed(ip)) {
+			log.Printf("ip blocked (api): %s %s", ip, r.URL.Path)
 			httpError(w, http.StatusForbidden, "forbidden")
 			return
 		}
@@ -170,17 +187,42 @@ func (s *Server) ipGate(h http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func (s *Server) ipAllowed(ip string) bool {
-	block, _ := s.store.getSetting("ip_block")
+// uiGate restricts dashboard/UI access by IP. API-key endpoints (/d, /f, /u)
+// are exempt — they keep their own ipGate. Set IP_GUARD_DISABLE=1 to bypass
+// everything (lockout recovery).
+func (s *Server) uiGate(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.Path
+		if strings.HasPrefix(p, "/d/") || strings.HasPrefix(p, "/f/") || p == "/u" {
+			next.ServeHTTP(w, r) // API-key endpoints are not UI-restricted
+			return
+		}
+		if !s.guardOff() {
+			ip := clientIP(r)
+			if s.store.isBlockedIP(ip) || !s.uiIPAllowed(ip) {
+				log.Printf("ui blocked: %s %s", ip, p)
+				httpError(w, http.StatusForbidden, "forbidden")
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// ipPass: block-list denies; a non-empty allow-list means allow-only.
+func (s *Server) ipPass(ip, allowKey, blockKey string) bool {
+	block, _ := s.store.getSetting(blockKey)
 	if ipInList(ip, block) {
 		return false
 	}
-	allow, _ := s.store.getSetting("ip_allow")
+	allow, _ := s.store.getSetting(allowKey)
 	if strings.TrimSpace(allow) != "" {
 		return ipInList(ip, allow)
 	}
 	return true
 }
+func (s *Server) ipAllowed(ip string) bool   { return s.ipPass(ip, "ip_allow", "ip_block") }
+func (s *Server) uiIPAllowed(ip string) bool { return s.ipPass(ip, "ui_allow", "ui_block") }
 
 // splitIPList tokenizes a list on commas/whitespace/newlines.
 func splitIPList(list string) []string {

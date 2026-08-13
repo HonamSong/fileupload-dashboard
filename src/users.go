@@ -178,7 +178,7 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, "db error: %v", err)
 		return
 	}
-	_ = s.store.deleteSessionsForUser(id)     // log the deleted user out everywhere
-	_ = s.store.deletePermissionsForUser(id)  // drop their folder grants
+	_ = s.store.deleteSessionsForUser(id)    // log the deleted user out everywhere
+	_ = s.store.deletePermissionsForUser(id) // drop their folder grants
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
