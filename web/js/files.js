@@ -378,7 +378,10 @@ async function showPreview(id, name) {
       img.src = URL.createObjectURL(blob); pane.appendChild(img);
     } else {
       const text = await res.text();
-      pane.innerHTML = `<pre></pre>`; pane.querySelector("pre").textContent = text;
+      pane.innerHTML = `<pre></pre>`;
+      const pre = pane.querySelector("pre");
+      const hl = (typeof highlightCode === "function") ? highlightCode(text, name) : null;
+      if (hl !== null) pre.innerHTML = hl; else pre.textContent = text; // fallback: plain
     }
   } catch (e) { pane.innerHTML = `<span class="muted">미리보기 실패: ${esc(e.message)}</span>`; }
 }

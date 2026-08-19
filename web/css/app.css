@@ -86,10 +86,11 @@
   #previewPane pre { margin: 0; white-space: pre-wrap; word-break: break-word; color: var(--text); }
   #previewPane img { max-width: 100%; border-radius: 6px; }
   .row-actions { display: flex; gap: 6px; flex-wrap: wrap; }
-  .toast { position: fixed; bottom: 20px; right: 20px; background: var(--panel2);
-    border: 1px solid var(--line); padding: 10px 16px; border-radius: 10px; opacity: 0;
-    transition: opacity .2s; pointer-events: none; }
-  .toast.show { opacity: 1; }
+  .toast { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%) scale(.96);
+    background: var(--panel2); border: 1px solid var(--line); padding: 14px 24px; border-radius: 12px;
+    font-size: 15px; box-shadow: 0 16px 48px rgba(0,0,0,.55); opacity: 0;
+    transition: opacity .18s ease, transform .18s ease; pointer-events: none; z-index: 300; }
+  .toast.show { opacity: 1; transform: translate(-50%, -50%) scale(1); }
   .hidden { display: none; }
   .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.55);
     display: flex; align-items: center; justify-content: center; z-index: 100; }
@@ -223,3 +224,12 @@
   .ipact.allow { color: #4ade80; border: 1px solid rgba(74,222,128,.5); }
   .ipact.allow:hover { background: rgba(74,222,128,.12); }
   #logsBody tr:hover .ipact { visibility: visible; }
+  /* preview syntax highlighting */
+  #previewPane .tok-comment { color: #6b7192; font-style: italic; }
+  #previewPane .tok-str     { color: #9ece8a; }
+  #previewPane .tok-key     { color: #82aaff; }
+  #previewPane .tok-num     { color: #f0a868; }
+  #previewPane .tok-kw      { color: #c792ea; }
+  #previewPane .tok-bool    { color: #f78c6c; }
+  #previewPane .tok-var     { color: #89ddff; }
+  #previewPane .tok-punct   { color: #8a90ad; }
