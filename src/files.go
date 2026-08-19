@@ -373,7 +373,11 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	// Soft delete: the blob stays in place; trash is a logical state (deleted_at).
 	now := time.Now().UTC()
-	if err := s.store.softDeleteFile(id, now); err != nil {
+	by := ""
+	if u := s.currentUser(r); u != nil {
+		by = u.Username
+	}
+	if err := s.store.softDeleteFile(id, now, by); err != nil {
 		httpError(w, http.StatusInternalServerError, "db error: %v", err)
 		return
 	}

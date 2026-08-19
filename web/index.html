@@ -126,10 +126,16 @@
 <!-- TRASH TAB -->
 <main id="tab-trash" class="hidden">
   <section class="card full">
-    <h2>휴지통 <span class="muted">(약 10일 후 자동 완전삭제)</span></h2>
+    <div class="cardhead">
+      <h2 style="margin:0">휴지통 <span class="muted">(약 10일 후 자동 완전삭제)</span></h2>
+      <span style="display:flex;gap:8px;margin-left:auto">
+        <button class="btn ghost small" id="trashRestoreBtn" onclick="restoreSelectedTrash()" disabled>선택 복구 (0)</button>
+        <button class="btn danger small" id="trashPurgeBtn" onclick="purgeSelectedTrash()" disabled>선택 완전삭제 (0)</button>
+      </span>
+    </div>
     <div style="overflow-x:auto">
       <table>
-        <thead><tr><th>이름</th><th>크기</th><th>삭제 시각</th><th>완전삭제 예정</th><th></th></tr></thead>
+        <thead><tr><th style="width:28px"><input type="checkbox" id="trashSelAll" onchange="toggleAllTrash(this.checked)"></th><th>이름</th><th>크기</th><th>삭제자</th><th>삭제 시각</th><th>완전삭제 예정</th><th></th></tr></thead>
         <tbody id="trashBody"></tbody>
       </table>
     </div>

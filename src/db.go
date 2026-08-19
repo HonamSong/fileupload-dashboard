@@ -23,6 +23,7 @@ type File struct {
 	UploadedAt    time.Time  `json:"uploaded_at"`
 	DownloadCount int        `json:"download_count"`
 	DeletedAt     *time.Time `json:"deleted_at,omitempty"`
+	DeletedBy     string     `json:"deleted_by,omitempty"`
 }
 
 // User is a dashboard login account. Role is one of admin | user | view.
@@ -168,6 +169,9 @@ CREATE TABLE IF NOT EXISTS users (
 	if err := s.ensureColumn("files", "checksum", `ALTER TABLE files ADD COLUMN checksum TEXT NOT NULL DEFAULT ''`); err != nil {
 		return err
 	}
+	if err := s.ensureColumn("files", "deleted_by", `ALTER TABLE files ADD COLUMN deleted_by TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
 	// API key state columns (disable + revoke countdown) for pre-existing databases.
 	if err := s.ensureColumn("api_keys", "disabled", `ALTER TABLE api_keys ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0`); err != nil {
 		return err
@@ -283,13 +287,13 @@ func (s *Store) insertFile(f *File) error {
 }
 
 // fileColumns lists file columns in the order scanFile expects them.
-const fileColumns = "id, name, folder, size, checksum, content_type, stored_path, uploaded_at, download_count, deleted_at"
+const fileColumns = "id, name, folder, size, checksum, content_type, stored_path, uploaded_at, download_count, deleted_at, COALESCE(deleted_by,'')"
 
 func scanFile(row interface{ Scan(...any) error }) (*File, error) {
 	var f File
 	var deleted sql.NullTime
 	if err := row.Scan(&f.ID, &f.Name, &f.Folder, &f.Size, &f.Checksum, &f.ContentType, &f.StoredPath,
-		&f.UploadedAt, &f.DownloadCount, &deleted); err != nil {
+		&f.UploadedAt, &f.DownloadCount, &deleted, &f.DeletedBy); err != nil {
 		return nil, err
 	}
 	if deleted.Valid {
@@ -362,8 +366,8 @@ func (s *Store) queryFiles(query string, args ...any) ([]*File, error) {
 	return out, rows.Err()
 }
 
-func (s *Store) softDeleteFile(id string, when time.Time) error {
-	res, err := s.db.Exec(`UPDATE files SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL`, when, id)
+func (s *Store) softDeleteFile(id string, when time.Time, by string) error {
+	res, err := s.db.Exec(`UPDATE files SET deleted_at = ?, deleted_by = ? WHERE id = ? AND deleted_at IS NULL`, when, by, id)
 	if err != nil {
 		return err
 	}
@@ -371,7 +375,7 @@ func (s *Store) softDeleteFile(id string, when time.Time) error {
 }
 
 func (s *Store) restoreFile(id string) error {
-	res, err := s.db.Exec(`UPDATE files SET deleted_at = NULL WHERE id = ? AND deleted_at IS NOT NULL`, id)
+	res, err := s.db.Exec(`UPDATE files SET deleted_at = NULL, deleted_by = '' WHERE id = ? AND deleted_at IS NOT NULL`, id)
 	if err != nil {
 		return err
 	}

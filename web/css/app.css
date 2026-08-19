@@ -129,6 +129,8 @@
   .settings-area { margin-top: auto; }
   .sidebar-user { display: flex; align-items: center; justify-content: space-between; gap: 8px;
     margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 13px; }
+  .sidebar-user > span { flex: 1; min-width: 0; word-break: break-word; }
+  .sidebar-user .btn { flex-shrink: 0; white-space: nowrap; }
   .settingsbtn { width: 100%; background: transparent; color: var(--muted); border: 1px solid var(--line);
     padding: 10px 14px; border-radius: 8px; cursor: pointer; font-size: 14px; text-align: left; }
   .settingsbtn:hover { color: var(--text); background: var(--panel2); }
