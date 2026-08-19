@@ -187,7 +187,7 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 	const csp = "default-src 'self'; " +
 		"script-src 'self' 'unsafe-inline'; " +
 		"style-src 'self' 'unsafe-inline'; " +
-		"img-src 'self' data:; font-src 'self'; connect-src 'self'; " +
+		"img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; " +
 		"object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
