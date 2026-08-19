@@ -11,6 +11,13 @@ import (
 	"time"
 )
 
+// Build metadata, injected at compile time via -ldflags "-X main.Version=... -X main.BuildTime=...".
+var (
+	Version   = "dev"
+	BuildTime = "unknown"
+	startedAt = time.Now()
+)
+
 type Config struct {
 	ListenAddr    string        // e.g. ":8080"
 	DataDir       string        // base data directory
@@ -77,6 +84,7 @@ func main() {
 	mux.HandleFunc("POST /api/login", srv.handleLogin)
 	mux.HandleFunc("POST /api/logout", srv.handleLogout)
 	mux.HandleFunc("GET /api/me", srv.handleMe)
+	mux.HandleFunc("GET /api/info", srv.requireAuth(srv.handleInfo)) // 버전·빌드 시각
 	// Management API — all require a valid session.
 	auth := srv.requireAuth     // any logged-in user
 	editor := srv.requireEditor // owner/admin/user (not view)

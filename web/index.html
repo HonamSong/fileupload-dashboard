@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>File Upload Dashboard</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiI+CiAgPHJlY3Qgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIiByeD0iNyIgZmlsbD0iIzE3MWEyYiIvPgogIDxwYXRoIGQ9Ik01IDExYTIgMiAwIDAgMSAyLTJoNmwyIDJoMTBhMiAyIDAgMCAxIDIgMnY5YTIgMiAwIDAgMS0yIDJIN2EyIDIgMCAwIDEtMi0yeiIgZmlsbD0iIzZjOGNmZiIvPgogIDxwYXRoIGQ9Ik0xNiAxMy41bDQuMiA0LjJoLTIuN1YyMmgtM3YtNC4zaC0yLjd6IiBmaWxsPSIjMGYxMjIwIi8+Cjwvc3ZnPgo=">
 <link rel="stylesheet" href="/css/app.css">
 </head>
 <body>
@@ -167,6 +168,7 @@
       <button id="subUsers" class="subtab hidden" onclick="selectSettingsSub('users')">사용자</button>
       <button id="subLogs" class="subtab hidden" onclick="selectSettingsSub('logs')">접근 로그</button>
       <button id="subServer" class="subtab hidden" onclick="selectSettingsSub('server')">Server</button>
+      <button id="subInfo" class="subtab" onclick="selectSettingsSub('info')">Info</button>
     </div>
 
     <!-- 프로필 (모든 사용자) -->
@@ -315,6 +317,14 @@
           <button id="srvSaveBtn" class="btn" onclick="saveServer()">저장</button>
         </span>
       </div>
+    </div>
+
+    <!-- Info (모든 사용자) -->
+    <div id="settings-info" class="hidden">
+      <div class="muted" style="font-size:12px;margin-bottom:12px">애플리케이션 정보</div>
+      <table style="max-width:560px">
+        <tbody id="infoBody"></tbody>
+      </table>
     </div>
   </section>
 </main>

@@ -198,6 +198,10 @@ CREATE TABLE IF NOT EXISTS users (
 	if err := s.ensureColumn("users", "last_login_at", `ALTER TABLE users ADD COLUMN last_login_at TIMESTAMP`); err != nil {
 		return err
 	}
+	// blocked_ips records who blocked (username or "system").
+	if err := s.ensureColumn("blocked_ips", "blocked_by", `ALTER TABLE blocked_ips ADD COLUMN blocked_by TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
 	// access_logs now records denied attempts too (status + reason).
 	if err := s.ensureColumn("access_logs", "status", `ALTER TABLE access_logs ADD COLUMN status TEXT NOT NULL DEFAULT 'ok'`); err != nil {
 		return err
@@ -525,13 +529,14 @@ type BlockedIP struct {
 	IP        string    `json:"ip"`
 	BlockedAt time.Time `json:"blocked_at"`
 	Reason    string    `json:"reason"`
+	BlockedBy string    `json:"blocked_by"` // 차단 실행자 (username 또는 "system")
 }
 
-func (s *Store) addBlockedIP(ip, reason string) error {
+func (s *Store) addBlockedIP(ip, reason, by string) error {
 	_, err := s.db.Exec(
-		`INSERT INTO blocked_ips (ip, blocked_at, reason) VALUES (?, ?, ?)
-		 ON CONFLICT(ip) DO UPDATE SET blocked_at = excluded.blocked_at, reason = excluded.reason`,
-		ip, time.Now().UTC(), reason)
+		`INSERT INTO blocked_ips (ip, blocked_at, reason, blocked_by) VALUES (?, ?, ?, ?)
+		 ON CONFLICT(ip) DO UPDATE SET blocked_at = excluded.blocked_at, reason = excluded.reason, blocked_by = excluded.blocked_by`,
+		ip, time.Now().UTC(), reason, by)
 	return err
 }
 
@@ -547,7 +552,7 @@ func (s *Store) isBlockedIP(ip string) bool {
 }
 
 func (s *Store) listBlockedIPs() ([]*BlockedIP, error) {
-	rows, err := s.db.Query(`SELECT ip, blocked_at, reason FROM blocked_ips ORDER BY blocked_at DESC`)
+	rows, err := s.db.Query(`SELECT ip, blocked_at, reason, COALESCE(blocked_by, '') FROM blocked_ips ORDER BY blocked_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -555,7 +560,7 @@ func (s *Store) listBlockedIPs() ([]*BlockedIP, error) {
 	var out []*BlockedIP
 	for rows.Next() {
 		var b BlockedIP
-		if err := rows.Scan(&b.IP, &b.BlockedAt, &b.Reason); err != nil {
+		if err := rows.Scan(&b.IP, &b.BlockedAt, &b.Reason, &b.BlockedBy); err != nil {
 			return nil, err
 		}
 		out = append(out, &b)

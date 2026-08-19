@@ -100,11 +100,15 @@ func (s *Server) handleBlockIP(w http.ResponseWriter, r *http.Request) {
 	if reason == "" {
 		reason = "수동 차단"
 	}
-	if err := s.store.addBlockedIP(ip, reason); err != nil {
+	by := ""
+	if u := s.currentUser(r); u != nil {
+		by = u.Username
+	}
+	if err := s.store.addBlockedIP(ip, reason, by); err != nil {
 		httpError(w, http.StatusInternalServerError, "db error: %v", err)
 		return
 	}
-	log.Printf("manually blocked ip=%s", ip)
+	log.Printf("manually blocked ip=%s by=%s", ip, by)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -169,7 +173,7 @@ func (s *Server) recordKeyFailure(ip string) {
 	kept = append(kept, now)
 	s.keyFails[ip] = kept
 	if len(kept) >= threshold {
-		_ = s.store.addBlockedIP(ip, fmt.Sprintf("잘못된 키 %d회 시도 (자동 차단)", len(kept)))
+		_ = s.store.addBlockedIP(ip, fmt.Sprintf("잘못된 키 %d회 시도 (자동 차단)", len(kept)), "system")
 		delete(s.keyFails, ip)
 		log.Printf("auto-blocked ip=%s after %d bad key attempts", ip, len(kept))
 	}

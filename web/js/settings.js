@@ -15,13 +15,41 @@ async function selectSettingsSub(name) {
   $("#subUsers").classList.toggle("active", name === "users");
   $("#subLogs").classList.toggle("active", name === "logs");
   $("#subServer").classList.toggle("active", name === "server");
+  $("#subInfo").classList.toggle("active", name === "info");
   $("#settings-profile").classList.toggle("hidden", name !== "profile");
   $("#settings-users").classList.toggle("hidden", name !== "users");
   $("#settings-logs").classList.toggle("hidden", name !== "logs");
   $("#settings-server").classList.toggle("hidden", name !== "server");
+  $("#settings-info").classList.toggle("hidden", name !== "info");
   if (name === "users") loadUsers();
   if (name === "logs") loadLogs();
   if (name === "server") loadServer();
+  if (name === "info") loadInfo();
+}
+
+async function loadInfo() {
+  const b = $("#infoBody");
+  b.innerHTML = `<tr><td class="muted">불러오는 중…</td></tr>`;
+  try {
+    const i = await api("GET", "/api/info");
+    const row = (k, v) => `<tr><td class="muted" style="width:160px">${k}</td><td>${v}</td></tr>`;
+    const fmt = t => t ? new Date(t).toLocaleString("ko-KR") : "-";
+    b.innerHTML =
+      row("버전", esc(i.version || "-")) +
+      row("빌드 시각", i.build_time && i.build_time !== "unknown" ? fmt(i.build_time) : "-") +
+      row("서버 시작", fmt(i.started_at)) +
+      row("가동 시간", fmtUptime(i.uptime_sec)) +
+      row("Go 버전", esc(i.go_version || "-"));
+  } catch (e) { b.innerHTML = `<tr><td class="muted">불러오기 실패: ${esc(e.message)}</td></tr>`; }
+}
+function fmtUptime(sec) {
+  sec = +sec || 0;
+  const d = Math.floor(sec / 86400), h = Math.floor(sec % 86400 / 3600), m = Math.floor(sec % 3600 / 60);
+  const parts = [];
+  if (d) parts.push(d + "일");
+  if (h) parts.push(h + "시간");
+  parts.push(m + "분");
+  return parts.join(" ");
 }
 // ---- server settings: validation ----
 function isIPv4(s) {
@@ -152,11 +180,12 @@ async function loadServer() {
 }
 function renderBlockedIPs(list) {
   const el = $("#srvBlockedWrap"); if (!el) return;
-  if (!list.length) { el.innerHTML = '<div class="muted" style="font-size:12px">현재 자동 차단된 IP가 없습니다.</div>'; return; }
-  el.innerHTML = `<div class="muted" style="font-size:12px;margin-bottom:6px">자동 차단된 IP (${list.length})</div>` +
+  const head = '<div class="muted" style="font-size:12px;margin-bottom:6px">차단된 IP 목록 (자동 차단 + 접근 로그 수동 차단)';
+  if (!list.length) { el.innerHTML = head + '</div><div class="muted" style="font-size:12px">차단된 IP가 없습니다.</div>'; return; }
+  el.innerHTML = head + ` — ${list.length}건</div>` +
     list.map(b => `
       <div class="fp-row">
-        <span><span class="key">${esc(b.ip)}</span> <span class="muted">${esc(b.reason || "")} · ${fmtTime(b.blocked_at)}</span></span>
+        <span><span class="key">${esc(b.ip)}</span> <span class="muted">${esc(b.reason || "")} · 차단자 ${esc(b.blocked_by || "-")} · ${fmtTime(b.blocked_at)}</span></span>
         <button class="btn ghost small" onclick="unblockIP('${escAttr(b.ip)}')">차단 해제</button>
       </div>`).join("");
 }

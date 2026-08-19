@@ -8,8 +8,12 @@ RUN go mod download 2>/dev/null || true
 
 COPY src/ .
 # Resolve/verify deps, then build a static binary (modernc/sqlite is pure Go).
+# Version comes from --build-arg APP_VERSION (default below); build time is stamped now.
+ARG APP_VERSION=1.0.0
 RUN go mod tidy
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /out/dashboard .
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags="-s -w -X main.Version=${APP_VERSION} -X main.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    -o /out/dashboard .
 
 # ---- runtime stage ----
 FROM alpine:3.20
