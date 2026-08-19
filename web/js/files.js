@@ -455,11 +455,14 @@ async function showPreview(id, name) {
       pane.innerHTML = ""; const img = document.createElement("img");
       img.src = URL.createObjectURL(blob); pane.appendChild(img);
     } else {
-      const text = await res.text();
-      pane.innerHTML = `<pre></pre>`;
-      const pre = pane.querySelector("pre");
+      let text = await res.text();
+      if (text.endsWith("\n")) text = text.slice(0, -1); // drop one trailing newline for clean numbering
+      const n = text.split("\n").length;
+      const gutter = Array.from({ length: n }, (_, i) => i + 1).join("\n");
       const hl = (typeof highlightCode === "function") ? highlightCode(text, name) : null;
-      if (hl !== null) pre.innerHTML = hl; else pre.textContent = text; // fallback: plain
+      const codeHTML = hl !== null ? hl : esc(text); // hl is already escaped; else escape plain
+      pane.innerHTML =
+        `<div class="codeview"><pre class="ln-gutter" aria-hidden="true">${gutter}</pre><pre class="ln-code">${codeHTML}</pre></div>`;
     }
   } catch (e) { pane.innerHTML = `<span class="muted">미리보기 실패: ${esc(e.message)}</span>`; }
 }

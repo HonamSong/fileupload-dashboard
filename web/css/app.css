@@ -244,3 +244,9 @@
   .menu button.danger { color: var(--danger); }
   /* 새로고침 아이콘: 신선도에 따라 색상 (초록<1분 / 노랑<30분 / 빨강≥30분) */
   .ricon { font-size: 14px; color: #6b7192; margin-right: 2px; }
+  /* preview line numbers */
+  #previewPane .codeview { display: inline-flex; align-items: stretch; min-width: 100%; }
+  #previewPane .ln-gutter { margin: 0; padding: 0 10px 0 2px; text-align: right; color: #6b7192;
+    user-select: none; white-space: pre; line-height: 1.5; border-right: 1px solid var(--line);
+    position: sticky; left: 0; background: #0b0e1a; flex: 0 0 auto; }
+  #previewPane .ln-code { margin: 0; padding: 0 0 0 12px; white-space: pre; line-height: 1.5; flex: 0 0 auto; color: var(--text); }
