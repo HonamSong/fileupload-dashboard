@@ -144,7 +144,7 @@ func main() {
 	mux.HandleFunc("POST /s/{token}", srv.handleShareDownload)
 
 	log.Printf("listening on %s (data=%s, trashTTL=%s)", cfg.ListenAddr, cfg.DataDir, cfg.TrashTTL)
-	if err := http.ListenAndServe(cfg.ListenAddr, srv.uiGate(mux)); err != nil {
+	if err := http.ListenAndServe(cfg.ListenAddr, srv.securityHeaders(srv.uiGate(mux))); err != nil {
 		log.Fatal(err)
 	}
 }

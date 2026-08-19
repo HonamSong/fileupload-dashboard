@@ -179,6 +179,34 @@ func (s *Server) recordKeyFailure(ip string) {
 	}
 }
 
+// securityHeaders sets defensive HTTP response headers on every response.
+// The app relies on inline event handlers (onclick) and inline styles, so the
+// CSP permits 'unsafe-inline' for script/style; all other sources are locked to
+// self (plus data: images for the favicon/select chevron).
+func (s *Server) securityHeaders(next http.Handler) http.Handler {
+	const csp = "default-src 'self'; " +
+		"script-src 'self' 'unsafe-inline'; " +
+		"style-src 'self' 'unsafe-inline'; " +
+		"img-src 'self' data:; font-src 'self'; connect-src 'self'; " +
+		"object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("Content-Security-Policy", csp)
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		h.Set("Permissions-Policy", "geolocation=(), microphone=(), camera=(), interest-cohort=()")
+		h.Set("Cross-Origin-Opener-Policy", "same-origin")
+		h.Set("Cross-Origin-Resource-Policy", "same-origin")
+		h.Set("X-Permitted-Cross-Domain-Policies", "none")
+		// HSTS only makes sense (and is only honored) over HTTPS.
+		if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+			h.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // ipGate enforces the API-endpoint (/d, /f, /u) IP rules + auto-block.
 func (s *Server) ipGate(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
