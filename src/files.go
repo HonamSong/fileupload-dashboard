@@ -358,6 +358,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	if force {
 		// Permanent deletion: remove the blob wherever it lives, then the row.
 		os.Remove(f.StoredPath)
+		_ = s.store.deleteSharesForFile(id) // drop its public share links
 		if err := s.store.deleteFileRow(id); err != nil {
 			httpError(w, http.StatusInternalServerError, "db error: %v", err)
 			return

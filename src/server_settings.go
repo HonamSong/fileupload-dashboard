@@ -198,8 +198,8 @@ func (s *Server) ipGate(h http.HandlerFunc) http.HandlerFunc {
 func (s *Server) uiGate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := r.URL.Path
-		if strings.HasPrefix(p, "/d/") || strings.HasPrefix(p, "/f/") || p == "/u" {
-			next.ServeHTTP(w, r) // API-key endpoints are not UI-restricted
+		if strings.HasPrefix(p, "/d/") || strings.HasPrefix(p, "/f/") || p == "/u" || strings.HasPrefix(p, "/s/") {
+			next.ServeHTTP(w, r) // API-key + public share endpoints are not UI-restricted
 			return
 		}
 		if !s.guardOff() {
@@ -224,7 +224,9 @@ func (s *Server) serveBlockedPage(w http.ResponseWriter, ip string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusForbidden)
-	fmt.Fprintf(w, blockedPageHTML, html.EscapeString(ip))
+	// Not Fprintf: the HTML/CSS contains literal '%' (e.g. width:100%) which
+	// would be mis-parsed as format verbs. Replace a safe placeholder instead.
+	fmt.Fprint(w, strings.ReplaceAll(blockedPageHTML, "{{IP}}", html.EscapeString(ip)))
 }
 
 const blockedPageHTML = `<!doctype html>
@@ -251,7 +253,7 @@ const blockedPageHTML = `<!doctype html>
     <div class="lock">🔒</div>
     <h1>접근이 제한되었습니다</h1>
     <p>이 IP 주소에서는 대시보드에 접근할 수 없습니다.<br>관리자에게 접근 허용을 요청하세요.</p>
-    <div class="ip">요청 IP: %s</div>
+    <div class="ip">요청 IP: {{IP}}</div>
     <div class="hint">File Upload Dashboard · 대시보드 UI IP 접근 제어</div>
   </div>
 </body></html>`

@@ -67,6 +67,7 @@ func (s *Server) purgeOnce() {
 			log.Printf("purge: remove %s: %v", f.StoredPath, err)
 			continue
 		}
+		_ = s.store.deleteSharesForFile(f.ID) // drop its public share links
 		if err := s.store.deleteFileRow(f.ID); err != nil {
 			log.Printf("purge: db delete %s: %v", f.ID, err)
 			continue
@@ -74,8 +75,11 @@ func (s *Server) purgeOnce() {
 		log.Printf("purge: permanently deleted %s (%s)", f.ID, f.Name)
 	}
 
-	// Drop expired login sessions.
+	// Drop expired login sessions and expired share links.
 	_ = s.store.deleteExpiredSessions(time.Now().UTC())
+	if n, err := s.store.deleteExpiredShares(time.Now().UTC()); err == nil && n > 0 {
+		log.Printf("purge: removed %d expired share link(s)", n)
+	}
 
 	// Also purge revoked API keys past their TTL.
 	keyIDs, err := s.store.expiredRevokedKeys(cutoff)

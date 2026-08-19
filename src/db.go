@@ -132,6 +132,16 @@ CREATE TABLE IF NOT EXISTS blocked_ips (
     blocked_at TIMESTAMP NOT NULL,
     reason     TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS shares (
+    token          TEXT PRIMARY KEY,
+    file_id        TEXT NOT NULL,
+    password_hash  TEXT NOT NULL DEFAULT '',
+    expires_at     TIMESTAMP NOT NULL,
+    created_by     TEXT NOT NULL DEFAULT '',
+    created_at     TIMESTAMP NOT NULL,
+    download_count INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_shares_file ON shares(file_id);
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -200,6 +210,14 @@ CREATE TABLE IF NOT EXISTS users (
 	}
 	// blocked_ips records who blocked (username or "system").
 	if err := s.ensureColumn("blocked_ips", "blocked_by", `ALTER TABLE blocked_ips ADD COLUMN blocked_by TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	// shares can hold multiple files (comma-separated ids) for zip downloads.
+	if err := s.ensureColumn("shares", "file_ids", `ALTER TABLE shares ADD COLUMN file_ids TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	// shares can cap total downloads (0 = unlimited; legacy rows = unlimited).
+	if err := s.ensureColumn("shares", "max_downloads", `ALTER TABLE shares ADD COLUMN max_downloads INTEGER NOT NULL DEFAULT 0`); err != nil {
 		return err
 	}
 	// access_logs now records denied attempts too (status + reason).
@@ -549,6 +567,110 @@ func (s *Store) isBlockedIP(ip string) bool {
 	var n int
 	_ = s.db.QueryRow(`SELECT COUNT(*) FROM blocked_ips WHERE ip = ?`, ip).Scan(&n)
 	return n > 0
+}
+
+// ---- public share links ----
+
+type Share struct {
+	Token         string    `json:"token"`
+	FileID        string    `json:"file_id"`  // first file (back-compat / NOT NULL)
+	FileIDs       []string  `json:"file_ids"` // all files in this share (1+)
+	HasPassword   bool      `json:"has_password"`
+	PasswordHash  string    `json:"-"`
+	ExpiresAt     time.Time `json:"expires_at"`
+	CreatedBy     string    `json:"created_by"`
+	CreatedAt     time.Time `json:"created_at"`
+	DownloadCount int       `json:"download_count"`
+	MaxDownloads  int       `json:"max_downloads"` // 0 = unlimited
+}
+
+const shareCols = "token, file_id, COALESCE(file_ids,''), password_hash, expires_at, created_by, created_at, download_count, COALESCE(max_downloads,0)"
+
+func scanShare(row interface{ Scan(...any) error }) (*Share, error) {
+	var sh Share
+	var ids string
+	if err := row.Scan(&sh.Token, &sh.FileID, &ids, &sh.PasswordHash, &sh.ExpiresAt, &sh.CreatedBy, &sh.CreatedAt, &sh.DownloadCount, &sh.MaxDownloads); err != nil {
+		return nil, err
+	}
+	if ids != "" {
+		sh.FileIDs = strings.Split(ids, ",")
+	} else if sh.FileID != "" {
+		sh.FileIDs = []string{sh.FileID} // legacy single-file share
+	}
+	sh.HasPassword = sh.PasswordHash != ""
+	return &sh, nil
+}
+
+func (s *Store) createShare(sh *Share) error {
+	first := ""
+	if len(sh.FileIDs) > 0 {
+		first = sh.FileIDs[0]
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO shares (token, file_id, file_ids, password_hash, expires_at, created_by, created_at, download_count, max_downloads)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+		sh.Token, first, strings.Join(sh.FileIDs, ","), sh.PasswordHash, sh.ExpiresAt, sh.CreatedBy, sh.CreatedAt, sh.MaxDownloads)
+	return err
+}
+
+// consumeShareDownload atomically reserves one download slot. Returns allowed
+// (a slot was available) and exhausted (this use hit the max). The conditional
+// UPDATE makes the check-and-increment race-free under concurrent requests.
+func (s *Store) consumeShareDownload(token string) (allowed, exhausted bool, err error) {
+	res, err := s.db.Exec(
+		`UPDATE shares SET download_count = download_count + 1
+		 WHERE token = ? AND (max_downloads = 0 OR download_count < max_downloads)`, token)
+	if err != nil {
+		return false, false, err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return false, false, nil // no slot left (limit reached) or token gone
+	}
+	var cnt, max int
+	if err := s.db.QueryRow(`SELECT download_count, max_downloads FROM shares WHERE token = ?`, token).Scan(&cnt, &max); err != nil {
+		return true, false, nil
+	}
+	return true, max > 0 && cnt >= max, nil
+}
+
+func (s *Store) getShare(token string) (*Share, error) {
+	return scanShare(s.db.QueryRow(`SELECT `+shareCols+` FROM shares WHERE token = ?`, token))
+}
+
+func (s *Store) listAllShares() ([]*Share, error) {
+	rows, err := s.db.Query(`SELECT ` + shareCols + ` FROM shares ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Share
+	for rows.Next() {
+		sh, err := scanShare(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, sh)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) deleteShare(token string) error {
+	_, err := s.db.Exec(`DELETE FROM shares WHERE token = ?`, token)
+	return err
+}
+
+func (s *Store) deleteSharesForFile(fileID string) error {
+	_, err := s.db.Exec(`DELETE FROM shares WHERE file_id = ?`, fileID)
+	return err
+}
+
+func (s *Store) deleteExpiredShares(now time.Time) (int64, error) {
+	res, err := s.db.Exec(`DELETE FROM shares WHERE expires_at < ?`, now)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
 }
 
 func (s *Store) listBlockedIPs() ([]*BlockedIP, error) {

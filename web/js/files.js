@@ -242,6 +242,7 @@ function updateBulkUI() {
   $("#selCountMove").textContent = n;
   $("#bulkDeleteBtn").disabled = n === 0;
   $("#bulkMoveBtn").disabled = n === 0;
+  const sh = $("#shareBtn"); if (sh) sh.disabled = n === 0; // 공유는 체크박스 선택 기반
   const boxes = [...document.querySelectorAll("#filesBody .rowcheck")];
   const all = $("#selectAll");
   if (all) all.checked = boxes.length > 0 && boxes.every(cb => cb.checked);
@@ -252,6 +253,71 @@ function updateBulkUI() {
 function updateDownloadBtn() {
   const btn = $("#downloadBtn");
   if (btn) btn.disabled = selectedFiles.size === 0 && !selectedId;
+}
+
+// ---- public share links (checkbox selection; 2+ files → zip) ----
+let shareFileIds = [];
+function openShareModal() {
+  const ids = [...selectedFiles];
+  if (!ids.length) return;
+  shareFileIds = ids;
+  const names = ids.map(id => (filesById[id] ? filesById[id].name : id));
+  $("#shareName").textContent = ids.length === 1 ? names[0] : `${ids.length}개 파일 (zip)`;
+  $("#sharePw").value = "";
+  $("#shareExpiry").value = "1440";
+  $("#shareMax").value = "1";
+  const modal = $("#shareModal");
+  modal.classList.remove("hidden");
+  modal.onclick = e => { if (e.target === modal) closeShareModal(); };
+  loadShareList();
+}
+function closeShareModal() {
+  const m = $("#shareModal"); m.classList.add("hidden"); m.onclick = null; shareFileIds = [];
+}
+async function loadShareList() {
+  const box = $("#shareList");
+  box.innerHTML = `<div class="muted" style="font-size:13px">불러오는 중…</div>`;
+  try {
+    const res = await api("GET", "/api/shares");
+    const list = res.shares || [];
+    const head = $("#shareListHead"); if (head) head.textContent = `기존 공유 링크${list.length ? ` (${list.length})` : ""}`;
+    if (!list.length) { box.innerHTML = `<div class="muted" style="font-size:13px">생성된 공유 링크가 없습니다.</div>`; return; }
+    box.innerHTML = list.map(sh => {
+      const label = sh.file_count === 1
+        ? esc((sh.files && sh.files[0]) || "파일")
+        : `${sh.file_count}개 파일 (zip)`;
+      return `
+      <div class="fp-row" style="align-items:flex-start">
+        <span style="min-width:0">
+          <span style="font-weight:600">${label}</span>
+          <span class="key" style="display:block;word-break:break-all;margin-top:2px">${esc(sh.url)}</span>
+          <span class="muted" style="display:block;font-size:12px;margin-top:2px">${sh.has_password ? "🔒 비밀번호 · " : ""}만료 ${fmtTime(sh.expires_at)} · 다운로드 ${sh.download_count}${sh.max_downloads > 0 ? `/${sh.max_downloads}회 (남음 ${sh.remaining})` : "회 (무제한)"} · ${esc(sh.created_by)}</span>
+        </span>
+        <span style="display:flex;gap:6px;flex-shrink:0">
+          <button class="btn ghost small" onclick="copyText('${escAttr(sh.url)}')">복사</button>
+          <button class="btn danger small" onclick="deleteShareLink('${escAttr(sh.token)}')">삭제</button>
+        </span>
+      </div>`;
+    }).join("");
+  } catch (e) { box.innerHTML = `<div class="muted">불러오기 실패: ${esc(e.message)}</div>`; }
+}
+async function createShareLink() {
+  if (!shareFileIds.length) { toast("공유할 파일을 선택하세요"); return; }
+  const minutes = +$("#shareExpiry").value || 1440;
+  const max_downloads = +$("#shareMax").value; // 0 = 무제한
+  const password = $("#sharePw").value;
+  try {
+    const sh = await api("POST", "/api/shares", { file_ids: shareFileIds, minutes, max_downloads, password });
+    copyText(sh.url);
+    toast(`공유 링크 생성됨 (${sh.file_count}개 파일) · URL 복사됨`);
+    $("#sharePw").value = "";
+    loadShareList();
+  } catch (e) { toast("생성 실패: " + e.message); }
+}
+async function deleteShareLink(token) {
+  if (!await confirmDialog("이 공유 링크를 삭제하시겠습니까? 링크는 즉시 무효화됩니다.", { title: "공유 링크 삭제", okLabel: "삭제" })) return;
+  try { await api("DELETE", `/api/shares/${token}`); toast("삭제됨"); loadShareList(); }
+  catch (e) { toast("삭제 실패: " + e.message); }
 }
 
 async function bulkDelete() {

@@ -34,9 +34,10 @@ type Server struct {
 	filesDir string
 	keyHMAC  []byte // secret for signing/verifying API keys
 
-	failMu     sync.Mutex             // guards keyFails
-	keyFails   map[string][]time.Time // per-IP recent bad-key attempts (auto-block)
-	guardReArm atomic.Bool            // runtime re-enable of IP guards despite IP_GUARD_DISABLE
+	failMu      sync.Mutex             // guards keyFails + sharePwFail
+	keyFails    map[string][]time.Time // per-IP recent bad-key attempts (auto-block)
+	sharePwFail map[string][]time.Time // per-token wrong share-password attempts (brute-force guard)
+	guardReArm  atomic.Bool            // runtime re-enable of IP guards despite IP_GUARD_DISABLE
 }
 
 // guardOff reports whether all IP restrictions are currently bypassed. The env
@@ -69,7 +70,8 @@ func main() {
 		log.Fatalf("open db: %v", err)
 	}
 
-	srv := &Server{cfg: cfg, store: store, filesDir: filesDir, keyFails: map[string][]time.Time{}}
+	srv := &Server{cfg: cfg, store: store, filesDir: filesDir,
+		keyFails: map[string][]time.Time{}, sharePwFail: map[string][]time.Time{}}
 	srv.initKeyHMAC()
 	srv.backfillChecksums()
 	srv.seedAdminUser()
@@ -103,6 +105,9 @@ func main() {
 	mux.HandleFunc("GET /api/files/{id}/preview", editor(srv.handlePreview))        // 미리보기: view 차단
 	mux.HandleFunc("DELETE /api/files/{id}", editor(srv.handleDelete))              // 삭제
 	mux.HandleFunc("POST /api/files/{id}/restore", editor(srv.handleRestore))
+	mux.HandleFunc("GET /api/shares", auth(srv.handleListShares))             // 공유 링크 목록(본인/관리자 전체)
+	mux.HandleFunc("POST /api/shares", auth(srv.handleCreateShare))           // 공유 링크 생성(파일 1개 이상)
+	mux.HandleFunc("DELETE /api/shares/{token}", auth(srv.handleDeleteShare)) // 공유 링크 삭제
 	mux.HandleFunc("POST /api/files/{id}/move", editor(srv.handleMoveFile)) // 이동
 	mux.HandleFunc("GET /api/trash", auth(srv.handleListTrash))
 	mux.HandleFunc("GET /api/folders", auth(srv.handleListFolders))
@@ -134,6 +139,9 @@ func main() {
 	mux.HandleFunc("GET /f/{path...}", gate(srv.handleDownloadByPath))
 	// Public upload endpoint (X-API-Key; key owner must be user/admin).
 	mux.HandleFunc("POST /u", gate(srv.handleAPIUpload))
+	// Public share links (no account): landing page + password-verified download.
+	mux.HandleFunc("GET /s/{token}", srv.handleSharePage)
+	mux.HandleFunc("POST /s/{token}", srv.handleShareDownload)
 
 	log.Printf("listening on %s (data=%s, trashTTL=%s)", cfg.ListenAddr, cfg.DataDir, cfg.TrashTTL)
 	if err := http.ListenAndServe(cfg.ListenAddr, srv.uiGate(mux)); err != nil {

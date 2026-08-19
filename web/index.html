@@ -49,6 +49,7 @@
       <span style="display:flex;gap:8px">
         <button class="btn small editor-only" id="uploadBtn" onclick="openUploadModal()">＋ 업로드</button>
         <button class="btn ghost small" id="downloadBtn" onclick="downloadSelected()" title="선택한 파일을 로컬 PC에 저장" disabled>⬇ 다운로드</button>
+        <button class="btn ghost small editor-only" id="shareBtn" onclick="openShareModal()" title="계정 없는 사용자에게 공유 링크 생성" disabled>🔗 공유</button>
         <button class="btn ghost small editor-only" id="bulkMoveBtn" onclick="bulkMove()" disabled>이동 (<span id="selCountMove">0</span>)</button>
         <button class="btn danger small editor-only" id="bulkDeleteBtn" onclick="bulkDelete()" disabled>선택 삭제 (<span id="selCount">0</span>)</button>
         <button class="btn ghost small" onclick="loadFolders(); loadFiles()" title="현재 폴더 새로고침">⟳ 새로고침</button>
@@ -454,6 +455,47 @@
 
     <div class="actions" style="margin-top:20px">
       <button class="btn ghost" id="ueClose" onclick="closeUserEdit()">닫기</button>
+    </div>
+  </div>
+</div>
+
+<!-- 공유 링크 모달 (editor) -->
+<div id="shareModal" class="modal-backdrop hidden">
+  <div class="modal" style="width:min(580px,94vw)">
+    <h3>공유 링크</h3>
+    <p class="muted" style="font-size:12px;margin:0 0 10px">계정이 없는 사용자도 링크로 다운로드할 수 있습니다. 아래 <b>선택한 파일</b>로 새 링크를 만듭니다.</p>
+    <div style="font-size:13px;margin:0 0 12px;padding:8px 12px;background:#0b0e1a;border:1px solid var(--line);border-radius:8px">
+      새 링크로 만들 대상: <b id="shareName" style="color:var(--text)"></b>
+    </div>
+    <div class="curl" style="flex-wrap:wrap;align-items:center;gap:10px">
+      <span class="muted" style="font-size:13px">만료</span>
+      <select id="shareExpiry" class="txt">
+        <option value="5">5분 (테스트)</option>
+        <option value="180">3시간</option>
+        <option value="360">6시간</option>
+        <option value="720">12시간</option>
+        <option value="1440" selected>1일 (기본)</option>
+        <option value="4320">3일</option>
+        <option value="10080">7일</option>
+        <option value="20160">14일</option>
+        <option value="43200">30일</option>
+      </select>
+      <span class="muted" style="font-size:13px">다운로드</span>
+      <select id="shareMax" class="txt">
+        <option value="1" selected>1회 (기본)</option>
+        <option value="3">3회</option>
+        <option value="5">5회</option>
+        <option value="10">10회</option>
+        <option value="50">50회</option>
+        <option value="0">무제한</option>
+      </select>
+      <input id="sharePw" class="txt" type="text" placeholder="비밀번호 (선택, 비우면 없음)" style="flex:1;min-width:160px">
+      <button class="btn" onclick="createShareLink()">링크 생성</button>
+    </div>
+    <div id="shareListHead" class="muted" style="font-size:12px;margin:16px 0 6px;border-top:1px solid var(--line);padding-top:12px">기존 공유 링크</div>
+    <div id="shareList" style="display:flex;flex-direction:column;gap:8px;max-height:300px;overflow:auto"></div>
+    <div class="actions" style="margin-top:18px">
+      <button class="btn ghost" onclick="closeShareModal()">닫기</button>
     </div>
   </div>
 </div>

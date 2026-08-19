@@ -232,11 +232,15 @@ func (s *Server) handleDownloadZip(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusNotFound, "not found")
 		return
 	}
-
 	zipName := fmt.Sprintf("files-%s.zip", time.Now().Format("20060102-150405"))
+	s.streamZip(w, files, zipName, func(f *File) { s.logSession(r, "download", f.ID) })
+}
+
+// streamZip writes the given files as a single .zip attachment. onEach (may be
+// nil) runs per file after it's added (for logging). Download counts are bumped.
+func (s *Server) streamZip(w http.ResponseWriter, files []*File, zipName string, onEach func(*File)) {
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", "attachment; filename=\""+zipName+"\"")
-
 	zw := zip.NewWriter(w)
 	defer zw.Close()
 	used := map[string]int{}
@@ -260,7 +264,9 @@ func (s *Server) handleDownloadZip(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_ = s.store.incrementDownload(f.ID)
-		s.logSession(r, "download", f.ID)
+		if onEach != nil {
+			onEach(f)
+		}
 	}
 }
 
