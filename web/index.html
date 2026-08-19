@@ -48,12 +48,16 @@
       <h2 style="margin:0">파일 목록 <span class="muted" style="font-size:13px;font-weight:400" id="curPathLabel">/</span></h2>
       <span style="display:flex;gap:8px">
         <button class="btn small editor-only" id="uploadBtn" onclick="openUploadModal()">＋ 업로드</button>
-        <button class="btn ghost small" id="downloadBtn" onclick="downloadSelected()" title="선택한 파일을 로컬 PC에 저장" disabled>⬇ 다운로드</button>
-        <button class="btn ghost small editor-only" id="shareBtn" onclick="openShareModal()" title="계정 없는 사용자에게 공유 링크 생성" disabled>🔗 공유</button>
-        <button class="btn ghost small editor-only" id="bulkMoveBtn" onclick="bulkMove()" disabled>이동 (<span id="selCountMove">0</span>)</button>
-        <button class="btn danger small editor-only" id="bulkDeleteBtn" onclick="bulkDelete()" disabled>선택 삭제 (<span id="selCount">0</span>)</button>
-        <button class="btn ghost small" onclick="loadFolders(); loadFiles()" title="현재 폴더 새로고침">⟳ 새로고침</button>
-        <span id="filesUpdated" class="muted" style="font-size:12px;align-self:center"></span>
+        <span id="selMenuWrap" style="position:relative;display:inline-block">
+          <button class="btn ghost small" id="selActionBtn" onclick="toggleSelMenu(event)" disabled>선택 작업 (<span id="selCount">0</span>) ▾</button>
+          <div id="selMenu" class="menu hidden">
+            <button type="button" onclick="selMenuAction('download')">⬇ 다운로드</button>
+            <button type="button" class="editor-only" onclick="selMenuAction('share')">🔗 공유 링크</button>
+            <button type="button" class="editor-only" onclick="selMenuAction('move')">↔ 이동</button>
+            <button type="button" class="editor-only danger" onclick="selMenuAction('delete')">🗑 삭제</button>
+          </div>
+        </span>
+        <button class="btn ghost small" id="refreshBtn" onclick="loadFolders(); loadFiles()" title="현재 폴더 새로고침"><span id="refreshDot" class="ricon">⟳</span> 새로고침</button>
       </span>
     </div>
     <div style="overflow-x:auto">

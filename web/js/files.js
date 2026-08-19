@@ -142,7 +142,6 @@ async function loadFiles() {
     filesById = {}; selectedFiles.clear();
     $("#filesBody").innerHTML = `<tr><td colspan="7" class="muted">이 폴더에 접근 권한이 없습니다.</td></tr>`;
     selectedId = null; clearPreviewPane(); showCommands(null); updateBulkUI();
-    $("#filesUpdated").textContent = "";
     return;
   }
   filesById = {};
@@ -151,10 +150,20 @@ async function loadFiles() {
   allFiles.forEach(f => { filesById[f.id] = f; });
   filePage = 1;
   renderFilePage();
-  // Hide the select-all checkbox for view role.
-  $("#selectAll").style.visibility = canEdit() ? "visible" : "hidden";
-  $("#filesUpdated").textContent = "Updated " + new Date().toLocaleTimeString("en-US");
+  lastFilesRefresh = Date.now();
+  updateRefreshDot();
 }
+
+// Freshness dot inside 새로고침: green <1min, yellow <30min, red ≥30min.
+let lastFilesRefresh = 0;
+function updateRefreshDot() {
+  const dot = $("#refreshDot"); if (!dot || !lastFilesRefresh) return;
+  const min = (Date.now() - lastFilesRefresh) / 60000;
+  dot.style.color = min < 1 ? "#4ade80" : min < 30 ? "#ffcf6b" : "#ff6b6b";
+  const btn = $("#refreshBtn");
+  if (btn) btn.title = "마지막 새로고침: " + new Date(lastFilesRefresh).toLocaleTimeString("ko-KR");
+}
+setInterval(updateRefreshDot, 15000); // recolor as time passes
 
 // ---- file list pagination (client-side) ----
 let allFiles = [];
@@ -174,9 +183,7 @@ function renderFilePage() {
     tr.dataset.id = f.id;
     if (f.id === selectedId) tr.classList.add("sel");
     tr.onclick = () => selectFile(f.id);
-    const checkCell = canEdit()
-      ? `<td><input type="checkbox" class="rowcheck" data-id="${f.id}" ${selectedFiles.has(f.id) ? "checked" : ""} onclick="event.stopPropagation(); toggleSelect('${f.id}', this.checked)"></td>`
-      : `<td></td>`;
+    const checkCell = `<td><input type="checkbox" class="rowcheck" data-id="${f.id}" ${selectedFiles.has(f.id) ? "checked" : ""} onclick="event.stopPropagation(); toggleSelect('${f.id}', this.checked)"></td>`;
     const previewBtn = canEdit()
       ? `<button class="btn ghost small" onclick="event.stopPropagation(); showPreview('${f.id}','${escAttr(f.name)}')">미리보기</button>`
       : "";
@@ -239,21 +246,27 @@ function toggleSelectAll() {
 function updateBulkUI() {
   const n = selectedFiles.size;
   $("#selCount").textContent = n;
-  $("#selCountMove").textContent = n;
-  $("#bulkDeleteBtn").disabled = n === 0;
-  $("#bulkMoveBtn").disabled = n === 0;
-  const sh = $("#shareBtn"); if (sh) sh.disabled = n === 0; // 공유는 체크박스 선택 기반
+  const btn = $("#selActionBtn"); if (btn) btn.disabled = n === 0;
+  if (n === 0) closeSelMenu();
   const boxes = [...document.querySelectorAll("#filesBody .rowcheck")];
   const all = $("#selectAll");
   if (all) all.checked = boxes.length > 0 && boxes.every(cb => cb.checked);
-  updateDownloadBtn();
 }
 
-// Download button enables when a row is selected OR checkboxes are ticked.
-function updateDownloadBtn() {
-  const btn = $("#downloadBtn");
-  if (btn) btn.disabled = selectedFiles.size === 0 && !selectedId;
+// ---- selection action menu (dropdown) ----
+function toggleSelMenu(e) {
+  if (e) e.stopPropagation();
+  const m = $("#selMenu"); if (m) m.classList.toggle("hidden");
 }
+function closeSelMenu() { const m = $("#selMenu"); if (m) m.classList.add("hidden"); }
+function selMenuAction(a) {
+  closeSelMenu();
+  if (a === "download") downloadSelected();
+  else if (a === "share") openShareModal();
+  else if (a === "move") bulkMove();
+  else if (a === "delete") bulkDelete();
+}
+document.addEventListener("click", e => { if (!e.target.closest("#selMenuWrap")) closeSelMenu(); });
 
 // ---- public share links (checkbox selection; 2+ files → zip) ----
 let shareFileIds = [];
@@ -401,7 +414,6 @@ async function downloadSelected() {
 function showCommands(f) {
   cmdFile = f;
   $("#cmdName").textContent = f ? f.name : "";
-  updateDownloadBtn();
   if (!f) {
     $("#cmdEmpty").classList.remove("hidden");
     $("#curlWrap").classList.add("hidden");
