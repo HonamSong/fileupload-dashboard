@@ -179,14 +179,38 @@ async function openFolderModal(defaultParent, onCreated) {
 }
 
 async function deleteFolder(path) {
-  if (!await confirmDialog(`폴더 "${path}" 를 삭제하시겠습니까? (폴더가 비어 있어야 합니다)`, { title: "폴더 삭제", okLabel: "삭제" })) return;
+  if (!await confirmDialog(`폴더 "${path}" 를 삭제하시겠습니까?`, { title: "폴더 삭제", okLabel: "삭제" })) return;
   try {
     await api("DELETE", `/api/folders?path=${encodeURIComponent(path)}`);
-    toast("폴더 삭제됨");
-    if (currentFolder === path) currentFolder = "/";
-    await loadFolders();
-    setFolder(currentFolder);
-  } catch (e) { toast("삭제 실패: " + e.message); }
+    afterFolderDeleted(path, "폴더 삭제됨");
+  } catch (e) {
+    // 409 = 폴더가 비어 있지 않음. 관리자(admin+)면 강제 삭제 옵션을 제시한다.
+    if (e.status === 409) {
+      if (!isManager()) {
+        toast(`"${path}" 폴더가 비어 있지 않습니다. 하위 파일을 먼저 삭제하거나 관리자에게 문의하세요.`);
+        return;
+      }
+      const ok = await confirmDialog(
+        `"${path}" 폴더 안에 파일 또는 하위 폴더가 있습니다.\n폴더와 하위 폴더는 삭제되고, 안의 파일들은 휴지통으로 이동되어 복구할 수 있습니다.\n계속하시겠습니까?`,
+        { title: "폴더 삭제", okLabel: "삭제", danger: true });
+      if (!ok) return;
+      try {
+        const r = await api("DELETE", `/api/folders?path=${encodeURIComponent(path)}&force=true`);
+        afterFolderDeleted(path, `폴더 삭제됨 (파일 ${(r && r.trashed_files) || 0}개 휴지통으로 이동)`);
+        if (typeof loadFiles === "function") loadFiles();
+        if (typeof updateTrashCount === "function") updateTrashCount();
+      } catch (e2) { toast("삭제 실패: " + e2.message); }
+      return;
+    }
+    toast("삭제 실패: " + e.message);
+  }
+}
+
+async function afterFolderDeleted(path, msg) {
+  toast(msg);
+  if (currentFolder === path || currentFolder.startsWith(path.replace(/\/?$/, "/"))) currentFolder = "/";
+  await loadFolders();
+  setFolder(currentFolder);
 }
 
 // Move the selected files to another folder (target chosen from a dropdown).

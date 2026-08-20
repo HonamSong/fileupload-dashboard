@@ -5,11 +5,13 @@ function showSettings() {
   $("#subUsers").classList.toggle("hidden", !isManager()); // 사용자·접근로그는 owner/admin
   $("#subLogs").classList.toggle("hidden", !isManager());
   $("#subServer").classList.toggle("hidden", !isOwner());  // 서버 설정은 owner만
+  $("#subInfo").classList.toggle("hidden", !canEdit());    // Info는 user 이상 (view 제외)
   selectSettingsSub("profile");                            // 기본은 프로필
 }
 async function selectSettingsSub(name) {
   if ((name === "users" || name === "logs") && !isManager()) return;
   if (name === "server" && !isOwner()) return;
+  if (name === "info" && !canEdit()) return; // view 제외
   if (!(await guardLeaveServer(name === "server"))) return; // block leaving unsaved server changes
   $("#subProfile").classList.toggle("active", name === "profile");
   $("#subUsers").classList.toggle("active", name === "users");

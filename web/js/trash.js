@@ -9,17 +9,22 @@ async function loadTrash() {
   selectedTrash.forEach(id => { if (!ids.has(id)) selectedTrash.delete(id); });
   (files || []).forEach(f => {
     const tr = document.createElement("tr");
+    // 복구/완전삭제는 해당 폴더에 쓰기 권한이 있어야 가능 — 없으면 선택·버튼 비활성화.
+    const canAct = (typeof folderWritable === "function") ? folderWritable(f.folder || "/") : true;
+    if (!canAct) selectedTrash.delete(f.id);
     const checked = selectedTrash.has(f.id) ? "checked" : "";
+    const dis = canAct ? "" : "disabled";
+    const noPermTitle = canAct ? "" : `title="이 폴더에 대한 권한이 없습니다"`;
     tr.innerHTML = `
-      <td><input type="checkbox" class="trash-cb" data-id="${f.id}" ${checked} onchange="toggleTrash('${f.id}', this.checked)"></td>
+      <td><input type="checkbox" class="trash-cb" data-id="${f.id}" ${checked} ${dis} onchange="toggleTrash('${f.id}', this.checked)"></td>
       <td class="name">${esc(f.name)}<br><span class="muted key">${esc(f.folder || "/")}</span></td>
       <td>${fmtBytes(f.size)}</td>
       <td class="muted">${esc(f.deleted_by || "-")}</td>
       <td class="muted">${fmtTime(f.deleted_at)}</td>
       <td class="muted">${fmtTime(f.purge_at)}</td>
-      <td><div class="row-actions">
-        <button class="btn ghost small" onclick="restore('${f.id}')">복구</button>
-        <button class="btn danger small" onclick="forceDelete('${f.id}')">완전삭제</button>
+      <td><div class="row-actions" ${noPermTitle}>
+        <button class="btn ghost small" onclick="restore('${f.id}')" ${dis}>복구</button>
+        <button class="btn danger small" onclick="forceDelete('${f.id}')" ${dis}>완전삭제</button>
       </div></td>`;
     b.appendChild(tr);
   });
@@ -37,7 +42,8 @@ function toggleTrash(id, on) {
   updateTrashBulkUI();
 }
 function toggleAllTrash(on) {
-  document.querySelectorAll(".trash-cb").forEach(cb => {
+  // 권한이 있어(=활성화된) 선택 가능한 체크박스만 대상으로 한다.
+  document.querySelectorAll(".trash-cb:not([disabled])").forEach(cb => {
     cb.checked = on;
     if (on) selectedTrash.add(cb.dataset.id); else selectedTrash.delete(cb.dataset.id);
   });
@@ -49,7 +55,7 @@ function updateTrashBulkUI() {
   if (rb) { rb.textContent = `선택 복구 (${n})`; rb.disabled = n === 0; }
   if (pb) { pb.textContent = `선택 완전삭제 (${n})`; pb.disabled = n === 0; }
   const all = $("#trashSelAll");
-  const boxes = document.querySelectorAll(".trash-cb");
+  const boxes = document.querySelectorAll(".trash-cb:not([disabled])");
   if (all) all.checked = boxes.length > 0 && n === boxes.length;
 }
 

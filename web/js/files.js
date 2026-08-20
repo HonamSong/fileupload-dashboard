@@ -130,6 +130,9 @@ function updateFolderActions() {
   const canWrite = (typeof folderWritable === "function") ? folderWritable(currentFolder) : true;
   const upBtn = $("#uploadBtn"); if (upBtn) upBtn.disabled = !canWrite;
   const uw = $("#cmdUploadWrap"); if (uw) uw.style.display = canWrite ? "" : "none";
+  // "+ 폴더 생성" makes a subfolder under the current folder → needs write here.
+  const nf = $("#newFolderBtn");
+  if (nf) { nf.disabled = !canWrite; nf.title = canWrite ? "" : "이 폴더에 대한 쓰기 권한이 없습니다"; }
 }
 async function loadFiles() {
   updateUploadCmd();

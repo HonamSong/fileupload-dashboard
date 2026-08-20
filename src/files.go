@@ -282,13 +282,36 @@ func (s *Server) handleDeleteFolder(w http.ResponseWriter, r *http.Request) {
 	if !s.allowWrite(w, r, path) {
 		return
 	}
+	force := r.URL.Query().Get("force") == "true"
 	n, err := s.store.folderContentCount(path)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "db error: %v", err)
 		return
 	}
 	if n > 0 {
-		httpError(w, http.StatusConflict, "folder is not empty")
+		if !force {
+			httpError(w, http.StatusConflict, "folder is not empty")
+			return
+		}
+		// Force delete of a non-empty folder is restricted to managers (admin+).
+		u := s.currentUser(r)
+		if u == nil || !isManager(u.Role) {
+			httpError(w, http.StatusForbidden, "관리자(admin) 이상만 비어있지 않은 폴더를 삭제할 수 있습니다")
+			return
+		}
+		// Move all files under the folder (and subfolders) to the trash so they
+		// remain recoverable, then remove the folder tree + permission grants.
+		by := u.Username
+		moved, err := s.store.trashFilesUnderFolder(path, time.Now().UTC(), by)
+		if err != nil {
+			httpError(w, http.StatusInternalServerError, "db error: %v", err)
+			return
+		}
+		if err := s.store.deleteFolderTree(path); err != nil {
+			httpError(w, http.StatusInternalServerError, "db error: %v", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"status": "folder-trashed", "trashed_files": moved})
 		return
 	}
 	if err := s.store.deleteFolder(path); err != nil {
@@ -394,6 +417,13 @@ func (s *Server) handleRestore(w http.ResponseWriter, r *http.Request) {
 	}
 	if !s.allowWrite(w, r, f.Folder) {
 		return
+	}
+	// The file's folder may have been removed (e.g. folder deletion moved it to
+	// trash). Recreate the folder path so the restored file is navigable again.
+	if f.Folder != "/" {
+		for _, p := range ancestorFolders(f.Folder) {
+			_ = s.store.createFolder(p)
+		}
 	}
 	if err := s.store.restoreFile(id); err != nil {
 		httpError(w, http.StatusNotFound, "file not in trash")

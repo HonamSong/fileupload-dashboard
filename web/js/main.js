@@ -1,5 +1,7 @@
 // ---- tabs ----
 async function selectTab(name) {
+  // View role has no trash access — never open that tab for them.
+  if (name === "trash" && !canEdit()) name = "files";
   // Any tab switch leaves the Server settings view — guard unsaved changes.
   if (typeof guardLeaveServer === "function" && !(await guardLeaveServer(false))) return;
   document.querySelectorAll(".tabs button, .settingsbtn").forEach(x => x.classList.toggle("active", x.dataset.tab === name));

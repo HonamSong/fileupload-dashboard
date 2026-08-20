@@ -48,8 +48,26 @@ func (s *Server) handleCreateKey(w http.ResponseWriter, r *http.Request) {
 		Label     string `json:"label"`
 		Scope     string `json:"scope"`
 		IsService bool   `json:"is_service"`
+		UserID    string `json:"user_id"` // 대상 사용자(관리자만 지정 가능). 비우면 본인.
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
+
+	// Resolve the key owner. Managers (admin+) may issue a key on behalf of any
+	// user; everyone else can only create keys for themselves.
+	owner := u
+	if body.UserID != "" && body.UserID != u.ID {
+		if !isManager(u.Role) {
+			httpError(w, http.StatusForbidden, "다른 사용자 명의의 키는 관리자(admin) 이상만 발급할 수 있습니다")
+			return
+		}
+		target, err := s.store.getUser(body.UserID)
+		if err != nil {
+			httpError(w, http.StatusNotFound, "대상 사용자를 찾을 수 없습니다")
+			return
+		}
+		owner = target
+	}
+
 	label := strings.TrimSpace(body.Label)
 	if !validKeyLabel(label) {
 		httpError(w, http.StatusBadRequest, "라벨은 영문/숫자/_/- 만 사용할 수 있습니다")
@@ -66,29 +84,30 @@ func (s *Server) handleCreateKey(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusForbidden, "서비스 키는 관리자만 만들 수 있습니다")
 		return
 	}
-	// Personal keys: view role can only make download keys, and the per-user
-	// limit applies. Service keys (admin-only) have neither restriction.
+	// Personal keys: a view-role owner can only hold download keys, and the
+	// per-user limit applies to the OWNER. Service keys (admin-only) have neither
+	// restriction.
 	if !body.IsService {
-		if !isEditor(u.Role) && scopeAllowsUpload(body.Scope) {
-			httpError(w, http.StatusForbidden, "view 사용자는 다운로드 키만 만들 수 있습니다")
+		if !isEditor(owner.Role) && scopeAllowsUpload(body.Scope) {
+			httpError(w, http.StatusForbidden, "view 사용자는 다운로드 키만 가질 수 있습니다")
 			return
 		}
-		if n, err := s.store.countActiveKeys(u.ID); err != nil {
+		if n, err := s.store.countActiveKeys(owner.ID); err != nil {
 			httpError(w, http.StatusInternalServerError, "db error: %v", err)
 			return
 		} else if n >= maxKeysPerUser {
-			httpError(w, http.StatusConflict, fmt.Sprintf("개인 키는 최대 %d개까지 만들 수 있습니다", maxKeysPerUser))
+			httpError(w, http.StatusConflict, fmt.Sprintf("개인 키는 사용자당 최대 %d개까지 만들 수 있습니다", maxKeysPerUser))
 			return
 		}
 	}
-	if exists, err := s.store.keyLabelExists(label, u.ID); err != nil {
+	if exists, err := s.store.keyLabelExists(label, owner.ID); err != nil {
 		httpError(w, http.StatusInternalServerError, "db error: %v", err)
 		return
 	} else if exists {
-		httpError(w, http.StatusConflict, "이미 같은 라벨의 키가 있습니다")
+		httpError(w, http.StatusConflict, "해당 사용자에게 이미 같은 라벨의 키가 있습니다")
 		return
 	}
-	key, err := s.store.createKey(label, u.ID, body.Scope, body.IsService, s.newSignedKey())
+	key, err := s.store.createKey(label, owner.ID, body.Scope, body.IsService, s.newSignedKey())
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "db error: %v", err)
 		return

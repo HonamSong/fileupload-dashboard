@@ -478,6 +478,40 @@ func (s *Store) deleteFolder(path string) error {
 	return affectedOne(res)
 }
 
+// trashFilesUnderFolder soft-deletes (moves to trash) every ACTIVE file that
+// lives in the folder or any subfolder, recording the deleter. Blobs stay on
+// disk so the files remain recoverable from the trash. Returns how many moved.
+func (s *Store) trashFilesUnderFolder(path string, when time.Time, by string) (int, error) {
+	prefix := strings.TrimRight(path, "/") + "/"
+	res, err := s.db.Exec(
+		`UPDATE files SET deleted_at = ?, deleted_by = ? WHERE deleted_at IS NULL AND (folder = ? OR folder LIKE ?)`,
+		when, by, path, prefix+"%")
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
+// deleteFolderTree removes the folder, all of its subfolders, and the matching
+// permission grants in one transaction. File rows are left untouched (they are
+// moved to trash separately by trashFilesUnderFolder).
+func (s *Store) deleteFolderTree(path string) error {
+	prefix := strings.TrimRight(path, "/") + "/"
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM folders WHERE path = ? OR path LIKE ?`, path, prefix+"%"); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM folder_permissions WHERE folder = ? OR folder LIKE ?`, path, prefix+"%"); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // ---- folder permissions (per-user ACL) ----
 
 type FolderGrant struct {

@@ -76,7 +76,7 @@ async function api(method, url, body, isForm) {
   if (res.status === 401 && url !== "/api/login") showLogin(); // session expired → gate
   const txt = await res.text();
   let data = null; try { data = txt ? JSON.parse(txt) : null; } catch { data = txt; }
-  if (!res.ok) throw new Error((data && data.error) || res.statusText);
+  if (!res.ok) { const err = new Error((data && data.error) || res.statusText); err.status = res.status; throw err; }
   return data;
 }
 

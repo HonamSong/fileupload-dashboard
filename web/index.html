@@ -23,7 +23,7 @@
   <h1>📁 File Upload<br>Dashboard</h1>
   <nav class="tabs">
     <button data-tab="files" class="active">파일</button>
-    <button data-tab="keys">API 키</button>
+    <button data-tab="keys">API KEY</button>
     <button data-tab="trash" id="trashTab">휴지통</button>
   </nav>
   <div class="settings-area">
@@ -41,7 +41,7 @@
   <section class="card files-pane">
     <div class="cardhead">
       <h2>폴더</h2>
-      <button class="btn small editor-only" onclick="openFolderModal(currentFolder)">+ 폴더 생성</button>
+      <button class="btn small editor-only" id="newFolderBtn" onclick="openFolderModal(currentFolder)">+ 폴더 생성</button>
     </div>
     <div id="folderTree" class="foldertree"></div>
     <div class="cardhead" style="margin-top:18px">
@@ -145,12 +145,15 @@
 <!-- KEYS TAB -->
 <main id="tab-keys" class="hidden">
   <section class="card full">
-    <h2>API 키 발급</h2>
-    <div class="curl">
+    <h2>API KEY 발급</h2>
+    <div class="curl editor-only">
       <input id="keyLabel" class="txt" placeholder="용도/라벨 (예: partner-A)" oninput="updateKeyBtn()" onkeydown="if(event.key==='Enter')createKey()">
       <select id="keyKind" class="txt scope-select hidden" title="키 종류" onchange="updateKeyBtn()">
         <option value="personal">개인용</option>
         <option value="service">서비스용</option>
+      </select>
+      <select id="keyOwner" class="txt scope-select hidden" title="발급 대상 사용자" onchange="onKeyOwnerChange()">
+        <option value="">본인</option>
       </select>
       <select id="keyScope" class="txt scope-select">
         <option value="download">Download</option>
@@ -160,7 +163,7 @@
       <button class="btn" id="createKeyBtn" onclick="createKey()" disabled>키 생성</button>
       <span id="keyDupMsg" class="hidden" style="color:var(--danger);font-size:13px">중복되었습니다</span>
     </div>
-    <p class="muted" style="margin-top:8px">키는 <code>X-API-Key</code> 헤더로 사용합니다. 다운로드용은 <code>/d</code>·<code>/f</code>, 업로드용은 <code>/u</code>에서 동작합니다.</p>
+    <p class="muted editor-only" style="margin-top:8px">키는 <code>X-API-Key</code> 헤더로 사용합니다. 다운로드용은 <code>/d</code>·<code>/f</code>, 업로드용은 <code>/u</code>에서 동작합니다.</p>
     <div style="overflow-x:auto;margin-top:12px">
       <table>
         <thead><tr><th>라벨</th><th>종류</th><th>키</th><th>생성</th><th>마지막 사용</th><th>사용 횟수</th><th>상태</th><th></th></tr></thead>

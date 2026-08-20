@@ -22,7 +22,10 @@ function showApp() {
   $("#sidebarUser").textContent = me.username + " (" + me.role + ")";
   // Editor-only controls (view role hides these).
   document.querySelectorAll(".editor-only").forEach(el => el.classList.toggle("hidden", !canEdit()));
-  updateTrashCount();
+  // View role: no trash access (cannot restore/purge), so hide the tab entirely.
+  const trashBtn = document.querySelector('.tabs [data-tab="trash"]');
+  if (trashBtn) trashBtn.classList.toggle("hidden", !canEdit());
+  if (canEdit()) updateTrashCount();
   refreshKeysCache().then(() => selectTab("files"));
 }
 async function doLogin() {

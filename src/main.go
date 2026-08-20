@@ -117,12 +117,12 @@ func main() {
 	mux.HandleFunc("POST /api/folders/permissions", admin(srv.handleSetFolderPerm))
 	mux.HandleFunc("POST /api/folders", editor(srv.handleCreateFolder))
 	mux.HandleFunc("DELETE /api/folders", editor(srv.handleDeleteFolder))
-	mux.HandleFunc("GET /api/keys", auth(srv.handleListKeys))   // own keys; admin sees all
-	mux.HandleFunc("POST /api/keys", auth(srv.handleCreateKey)) // own key (max 3)
-	mux.HandleFunc("POST /api/keys/{id}/disable", auth(srv.handleDisableKey))
-	mux.HandleFunc("POST /api/keys/{id}/enable", auth(srv.handleEnableKey))
-	mux.HandleFunc("POST /api/keys/{id}/revoke", auth(srv.handleRevokeKey))
-	mux.HandleFunc("DELETE /api/keys/{id}", auth(srv.handleDeleteKey))
+	mux.HandleFunc("GET /api/keys", auth(srv.handleListKeys))     // own keys; admin sees all
+	mux.HandleFunc("POST /api/keys", editor(srv.handleCreateKey)) // own key (max 3); user+ only
+	mux.HandleFunc("POST /api/keys/{id}/disable", editor(srv.handleDisableKey))
+	mux.HandleFunc("POST /api/keys/{id}/enable", editor(srv.handleEnableKey))
+	mux.HandleFunc("POST /api/keys/{id}/revoke", editor(srv.handleRevokeKey))
+	mux.HandleFunc("DELETE /api/keys/{id}", editor(srv.handleDeleteKey)) // user+ only
 	mux.HandleFunc("GET /api/logs", admin(srv.handleListLogs))
 	mux.HandleFunc("GET /api/server", owner(srv.handleGetServer)) // base URL + IP rules (owner)
 	mux.HandleFunc("POST /api/server", owner(srv.handleSetServer))

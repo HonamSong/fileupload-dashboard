@@ -5,25 +5,39 @@ function daysLeft(purgeAt) {
 }
 
 let keyLimit = 3, myActiveKeys = 0;
+let usersById = {}; // id -> {username, role} (managers only, for on-behalf issuance)
 async function loadKeys() {
   const res = await api("GET", "/api/keys");
   const keys = res.keys || [];
   keysCache = keys; // keep command key-dropdowns in sync
   const admin = !!res.is_admin;
   keyLimit = res.limit || 3;
-  // My own keys drive the label-dup check and the per-user limit.
-  const myKeys = keys.filter(k => k.owner === me.username && !k.is_service);
-  keyLabels = new Set(keys.filter(k => k.owner === me.username && !k.revoked).map(k => k.label));
-  myActiveKeys = myKeys.filter(k => !k.revoked).length;
-  // view users can only make download keys — hide upload options.
-  $("#keyScope").querySelectorAll("option").forEach(o => {
-    if (o.value !== "download") o.hidden = !canEdit();
-  });
-  if (!canEdit()) $("#keyScope").value = "download";
+  // Managers can issue keys on behalf of another user — populate the target list.
+  if (isManager()) {
+    try {
+      const users = await api("GET", "/api/users");
+      usersById = {};
+      const sel = $("#keyOwner");
+      const cur = sel.value;
+      sel.innerHTML = `<option value="">본인 (${esc(me.username)})</option>`;
+      (users || []).forEach(u => {
+        usersById[u.id] = { username: u.username, role: u.role };
+        if (u.username === me.username) return; // 본인은 위 옵션으로
+        const o = document.createElement("option");
+        o.value = u.id; o.textContent = `${u.username} (${u.role})`;
+        sel.appendChild(o);
+      });
+      sel.value = [...sel.options].some(o => o.value === cur) ? cur : "";
+      sel.classList.remove("hidden");
+    } catch { $("#keyOwner").classList.add("hidden"); }
+  } else {
+    $("#keyOwner").classList.add("hidden");
+    $("#keyOwner").value = "";
+  }
   // Service keys are admin-only.
   $("#keyKind").classList.toggle("hidden", !isAdmin());
   if (!isAdmin()) $("#keyKind").value = "personal";
-  updateKeyBtn();
+  applyOwnerConstraints(); // scope options + dup/limit for the selected owner
   const b = $("#keysBody"); b.innerHTML = "";
   keys.forEach(k => {
     const tr = document.createElement("tr");
@@ -59,6 +73,28 @@ async function loadKeys() {
   });
   if (!keys.length) b.innerHTML = `<tr><td colspan="8" class="muted">발급된 키가 없습니다.</td></tr>`;
 }
+// The currently-selected key owner: {id, name, role}. Empty id = self.
+function selectedOwner() {
+  const sel = $("#keyOwner");
+  const id = (sel && !sel.classList.contains("hidden")) ? sel.value : "";
+  if (id && usersById[id]) return { id, name: usersById[id].username, role: usersById[id].role };
+  return { id: "", name: me.username, role: me.role };
+}
+// Recompute label-dup / per-user-limit state and scope options for the target owner.
+function applyOwnerConstraints() {
+  const owner = selectedOwner();
+  const ownerIsEditor = owner.role === "owner" || owner.role === "admin" || owner.role === "user";
+  const ownerKeys = keysCache.filter(k => k.owner === owner.name && !k.is_service);
+  keyLabels = new Set(keysCache.filter(k => k.owner === owner.name && !k.revoked).map(k => k.label));
+  myActiveKeys = ownerKeys.filter(k => !k.revoked).length;
+  // A view-role owner can only hold download keys — hide upload/both options.
+  $("#keyScope").querySelectorAll("option").forEach(o => {
+    if (o.value !== "download") o.hidden = !ownerIsEditor;
+  });
+  if (!ownerIsEditor) $("#keyScope").value = "download";
+  updateKeyBtn();
+}
+function onKeyOwnerChange() { applyOwnerConstraints(); }
 function scopeLabel(s) {
   if (s === "upload") return '<span style="color:var(--warn)">Upload</span>';
   if (s === "all") return '<span style="color:var(--accent)">Both</span>';
@@ -83,10 +119,11 @@ async function createKey() {
   if (!label) { toast("라벨을 입력하세요"); return; }
   const scope = $("#keyScope").value;
   const is_service = $("#keyKind").value === "service";
+  const owner = selectedOwner();
   try {
-    const k = await api("POST", "/api/keys", { label, scope, is_service });
+    const k = await api("POST", "/api/keys", { label, scope, is_service, user_id: owner.id });
     $("#keyLabel").value = "";
-    toast("키 생성됨 (키: " + k.key + ")");
+    toast(owner.id ? `키 생성됨 (${owner.name} 명의, 키: ${k.key})` : "키 생성됨 (키: " + k.key + ")");
     loadKeys();
   } catch (e) { toast("생성 실패: " + e.message); }
 }
