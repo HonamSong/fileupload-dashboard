@@ -77,6 +77,7 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, "db error: %v", err)
 		return
 	}
+	s.audit(r, "user_create", u.Username, "역할="+u.Role)
 	writeJSON(w, http.StatusCreated, u)
 }
 
@@ -116,6 +117,7 @@ func (s *Server) handleSetUserRole(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, "db error: %v", err)
 		return
 	}
+	s.audit(r, "user_role", target.Username, target.Role+" → "+body.Role)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "changed"})
 }
 
@@ -149,6 +151,7 @@ func (s *Server) handleSetUserPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.store.deleteSessionsForUser(id) // force the user to log in again
+	s.audit(r, "user_password", target.Username, "관리자에 의한 비밀번호 재설정")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "changed"})
 }
 
@@ -180,5 +183,6 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.store.deleteSessionsForUser(id)    // log the deleted user out everywhere
 	_ = s.store.deletePermissionsForUser(id) // drop their folder grants
+	s.audit(r, "user_delete", target.Username, "역할="+target.Role)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }

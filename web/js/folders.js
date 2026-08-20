@@ -38,23 +38,54 @@ async function loadFolders() {
     const toggle = hasKids
       ? `<span class="ftoggle" onclick="event.stopPropagation(); toggleFolder('${escAttr(path)}')">${isCollapsed ? "▶" : "▼"}</span>`
       : `<span class="ftoggle empty"></span>`;
-    // admin manages per-user grants; a writable non-admin can delete a folder.
-    const permBtn = isAdmin()
-      ? `<span class="fperm" title="폴더 권한" onclick="event.stopPropagation(); openFolderPerms('${escAttr(path)}')">🔒</span>`
-      : "";
-    const del = (path !== "/" && folderWritable(path))
-      ? `<span class="del" title="폴더 삭제" onclick="event.stopPropagation(); deleteFolder('${escAttr(path)}')">🗑</span>`
+    // 폴더 작업(권한/이동/삭제)은 세로 점 세개(⋮) 메뉴 하나로 모음.
+    const canManage = isAdmin();                               // 권한 관리(admin)
+    const canWriteHere = path !== "/" && folderWritable(path); // 이동/삭제
+    const kebab = (canManage || canWriteHere)
+      ? `<span class="kebab" title="폴더 작업" onclick="openFolderMenu(event, '${escAttr(path)}')">⋮</span>`
       : "";
     const cnt = counts[path] || 0;
     const badge = cnt ? ` <span class="muted" style="font-size:12px">(${cnt})</span>` : "";
     const lock = locked ? ' <span class="muted" title="접근 권한 없음">🔒</span>' : "";
-    node.innerHTML = `${toggle}<span>📁 ${esc(label)}${badge}${lock}</span><span style="margin-left:auto;display:flex;gap:4px">${permBtn}${del}</span>`;
+    node.innerHTML = `${toggle}<span>📁 ${esc(label)}${badge}${lock}</span>${kebab}`;
     box.appendChild(node);
     if (hasKids && !isCollapsed) kids.forEach(k => render(k, depth + 1));
   };
   render("/", 0);
   if (typeof updateFolderActions === "function") updateFolderActions();
 }
+
+// 폴더 작업 드롭다운(⋮): 권한/이동/삭제. 트리가 스크롤 영역이라 화면 고정 위치로 띄운다.
+function openFolderMenu(e, path) {
+  e.stopPropagation();
+  const m = $("#folderMenu"); if (!m) return;
+  const items = [];
+  if (isAdmin()) items.push(`<button type="button" onclick="folderMenuAct('perm', '${escAttr(path)}')">🔒 권한</button>`);
+  if (path !== "/" && folderWritable(path)) {
+    items.push(`<button type="button" onclick="folderMenuAct('move', '${escAttr(path)}')">↔ 이동</button>`);
+    items.push(`<button type="button" class="danger" onclick="folderMenuAct('delete', '${escAttr(path)}')">🗑 삭제</button>`);
+  }
+  if (!items.length) return;
+  m.innerHTML = items.join("");
+  m.classList.remove("hidden");
+  const r = e.currentTarget.getBoundingClientRect();
+  const width = 150;
+  m.style.position = "fixed";
+  m.style.top = (r.bottom + 4) + "px";
+  m.style.left = Math.max(8, Math.min(r.right - width, window.innerWidth - width - 8)) + "px";
+}
+function closeFolderMenu() { const m = $("#folderMenu"); if (m) m.classList.add("hidden"); }
+function folderMenuAct(a, path) {
+  closeFolderMenu();
+  if (a === "perm") openFolderPerms(path);
+  else if (a === "move") moveFolderPrompt(path);
+  else if (a === "delete") deleteFolder(path);
+}
+// 바깥 클릭 / 스크롤 시 닫기
+document.addEventListener("click", e => {
+  if (!e.target.closest("#folderMenu") && !e.target.closest(".kebab")) closeFolderMenu();
+});
+document.addEventListener("scroll", closeFolderMenu, true);
 
 function toggleFolder(path) {
   if (collapsed.has(path)) collapsed.delete(path); else collapsed.add(path);
@@ -214,6 +245,48 @@ async function afterFolderDeleted(path, msg) {
 }
 
 // Move the selected files to another folder (target chosen from a dropdown).
+// 폴더 이동: 대상 상위 폴더를 골라 폴더(및 하위 전체)를 옮긴다. (파일 이동과 동일 모달 재사용)
+async function moveFolderPrompt(path) {
+  if (path === "/") return;
+  const curParent = path.slice(0, path.lastIndexOf("/")) || "/";
+  const sel = $("#moveTarget");
+  const refill = async (selectPath) => {
+    const paths = await api("GET", "/api/folders");
+    sel.innerHTML = "";
+    (paths && paths.length ? paths : ["/"]).forEach(p => {
+      if (p === path || p.startsWith(path + "/")) return; // 자기 자신·하위 제외
+      if (p === curParent) return;                        // 현재 위치는 제외(무의미)
+      if (!folderWritable(p)) return;                     // 쓰기 가능한 상위만
+      const o = document.createElement("option");
+      o.value = p; o.textContent = p === "/" ? "/ (루트)" : p;
+      sel.appendChild(o);
+    });
+    if (selectPath && [...sel.options].some(o => o.value === selectPath)) sel.value = selectPath;
+  };
+  await refill();
+  if (!sel.options.length) { toast("이동할 수 있는 위치가 없습니다"); return; }
+  $("#moveMsg").textContent = `"${path}" 폴더를 옮길 상위 폴더를 선택하세요.`;
+  const modal = $("#moveModal"), ok = $("#moveOk"), cancel = $("#moveCancel"), newBtn = $("#moveNewFolder");
+  modal.classList.remove("hidden");
+  const close = () => { modal.classList.add("hidden"); ok.onclick = cancel.onclick = modal.onclick = newBtn.onclick = null; };
+  ok.onclick = async () => {
+    if (!sel.value) { toast("대상 폴더를 선택하세요"); return; }
+    const parent = sel.value; close();
+    try {
+      const r = await api("POST", "/api/folders/move", { path, parent });
+      toast(`폴더 이동됨 → ${r.path}`);
+      // 현재 보고 있던 폴더가 옮겨졌으면 새 경로로 따라간다.
+      if (currentFolder === path) currentFolder = r.path;
+      else if (currentFolder.startsWith(path + "/")) currentFolder = r.path + currentFolder.slice(path.length);
+      await loadFolders();
+      setFolder(currentFolder);
+    } catch (e) { toast("이동 실패: " + e.message); }
+  };
+  cancel.onclick = () => close();
+  modal.onclick = e => { if (e.target === modal) close(); };
+  newBtn.onclick = () => openFolderModal(sel.value || "/", (newPath) => refill(newPath));
+}
+
 async function bulkMove() {
   const ids = [...selectedFiles];
   if (!ids.length) return;

@@ -190,6 +190,9 @@ function renderFilePage() {
     const previewBtn = canEdit()
       ? `<button class="btn ghost small" onclick="event.stopPropagation(); showPreview('${f.id}','${escAttr(f.name)}')">미리보기</button>`
       : "";
+    const versionBtn = canEdit()
+      ? `<button class="btn ghost small" onclick="event.stopPropagation(); openVersions('${f.id}','${escAttr(f.name)}')">버전</button>`
+      : "";
     tr.innerHTML = `
       ${checkCell}
       <td class="name">${esc(f.name)}<br><span class="muted key">${f.id}</span></td>
@@ -200,7 +203,7 @@ function renderFilePage() {
         : '<span class="muted">-</span>'}</td>
       <td class="muted">${fmtTime(f.uploaded_at)}</td>
       <td><span class="pill">${f.download_count}회</span></td>
-      <td><div class="row-actions">${previewBtn}</div></td>`;
+      <td><div class="row-actions">${previewBtn}${versionBtn}</div></td>`;
     b.appendChild(tr);
   });
   if (!total) b.innerHTML = `<tr><td colspan="7" class="muted">파일이 없습니다.</td></tr>`;
@@ -468,6 +471,74 @@ async function showPreview(id, name) {
         `<div class="codeview"><pre class="ln-gutter" aria-hidden="true">${gutter}</pre><pre class="ln-code">${codeHTML}</pre></div>`;
     }
   } catch (e) { pane.innerHTML = `<span class="muted">미리보기 실패: ${esc(e.message)}</span>`; }
+}
+
+// ---- 파일 버전 (현재 + 이전 리비전 목록 / 다운로드 / 되돌리기) ----
+async function openVersions(id, name) {
+  const modal = $("#versionModal"), body = $("#verBody");
+  $("#verFileName").textContent = name;
+  body.innerHTML = `<div class="muted">불러오는 중…</div>`;
+  modal.classList.remove("hidden");
+  $("#verClose").onclick = () => modal.classList.add("hidden");
+  modal.onclick = e => { if (e.target === modal) modal.classList.add("hidden"); };
+  try {
+    const res = await api("GET", `/api/files/${id}/versions`);
+    const cur = res.current || {}, vers = res.versions || [];
+    const curVID = cur.current_version_id || "";
+    const curIsVersion = curVID && vers.some(v => v.id === curVID);
+    let html = "";
+    // 버전 목록에 현재가 포함되지 않는 경우(구버전 파일·버전 관리 꺼짐)만 별도 현재 행 표시.
+    if (!curIsVersion) {
+      html += `<div class="verrow cur">
+        <div class="vmeta"><span class="vno"><span class="pill ok">현재</span></span>
+          <div class="vsub">${fmtBytes(cur.size)} · ${esc(cur.uploaded_by || "-")} · ${fmtTime(cur.uploaded_at)}</div></div>
+        <div class="vacts"><button class="btn ghost small" onclick="downloadUrl('/api/files/${id}/download')">다운로드</button></div>
+      </div>`;
+    }
+    vers.forEach(v => {
+      const isCur = v.id === curVID;
+      const tag = isCur ? '<span class="pill ok" style="margin-right:6px">현재</span>' : "";
+      html += `<div class="verrow${isCur ? " cur" : ""}">
+        <div class="vmeta"><span class="vno">${tag}v${v.version_no}</span>
+          <div class="vsub">${fmtBytes(v.size)} · ${esc(v.uploaded_by || "-")} · ${fmtTime(v.created_at)}</div></div>
+        <div class="vacts">
+          <button class="btn ghost small" onclick="downloadUrl('/api/files/${id}/versions/${v.id}/download')">다운로드</button>
+          ${isCur ? "" : `<button class="btn small" onclick="restoreVersion('${id}','${v.id}',${v.version_no},'${escAttr(name)}')">되돌리기</button>`}
+          ${isCur ? "" : `<button class="btn danger small" onclick="deleteVersion('${id}','${v.id}',${v.version_no},'${escAttr(name)}')">삭제</button>`}
+        </div>
+      </div>`;
+    });
+    const onlyCurrent = curIsVersion && vers.length <= 1;
+    if (!vers.length || onlyCurrent) {
+      html += `<div class="muted" style="padding:12px 6px">이전 버전이 없습니다. 같은 폴더에 같은 파일명으로 다시 업로드하면 이전 내용이 버전으로 보관됩니다. (보관 개수: ${res.limit === 0 ? "사용 안 함" : res.limit})</div>`;
+    }
+    body.innerHTML = html;
+  } catch (e) { body.innerHTML = `<div class="muted">불러오기 실패: ${esc(e.message)}</div>`; }
+}
+// 쿠키 인증 GET 다운로드 엔드포인트를 새 요청으로 트리거 (첨부 다운로드).
+function downloadUrl(url) {
+  const a = document.createElement("a");
+  a.href = url; a.rel = "noopener";
+  document.body.appendChild(a); a.click(); a.remove();
+}
+async function restoreVersion(id, vid, no, name) {
+  if (!await confirmDialog(`현재 버전을 v${no} (으)로 전환하시겠습니까?`,
+    { title: "버전 되돌리기", okLabel: "되돌리기", danger: false })) return;
+  try {
+    const r = await api("POST", `/api/files/${id}/versions/${vid}/restore`);
+    toast(r && r.status === "unchanged" ? `이미 현재 버전입니다` : `v${no} (으)로 전환했습니다`);
+    openVersions(id, name); // 목록 갱신
+    loadFiles();
+  } catch (e) { toast("되돌리기 실패: " + e.message); }
+}
+async function deleteVersion(id, vid, no, name) {
+  if (!await confirmDialog(`v${no} 버전을 삭제하시겠습니까?\n이 버전의 저장된 내용이 영구 삭제됩니다. (현재 버전은 삭제할 수 없습니다)`,
+    { title: "버전 삭제", okLabel: "삭제" })) return;
+  try {
+    await api("DELETE", `/api/files/${id}/versions/${vid}`);
+    toast(`v${no} 버전을 삭제했습니다`);
+    openVersions(id, name); // 목록 갱신
+  } catch (e) { toast("삭제 실패: " + e.message); }
 }
 
 function copyCurl() {

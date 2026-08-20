@@ -112,6 +112,11 @@ func (s *Server) handleCreateKey(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, "db error: %v", err)
 		return
 	}
+	kind := "개인"
+	if body.IsService {
+		kind = "서비스"
+	}
+	s.audit(r, "key_create", owner.Username+" / "+label, fmt.Sprintf("%s 키, scope=%s", kind, body.Scope))
 	writeJSON(w, http.StatusCreated, key)
 }
 
@@ -139,6 +144,7 @@ func (s *Server) handleDisableKey(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusNotFound, "key not found or already revoked")
 		return
 	}
+	s.audit(r, "key_disable", s.keyOwnerName(k)+" / "+k.Label, "")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "disabled"})
 }
 
@@ -151,6 +157,7 @@ func (s *Server) handleEnableKey(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusNotFound, "key not found or already revoked")
 		return
 	}
+	s.audit(r, "key_enable", s.keyOwnerName(k)+" / "+k.Label, "")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "enabled"})
 }
 
@@ -167,6 +174,7 @@ func (s *Server) handleRevokeKey(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusNotFound, "key not found")
 		return
 	}
+	s.audit(r, "key_revoke", s.keyOwnerName(k)+" / "+k.Label, "")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
 }
 
@@ -179,6 +187,7 @@ func (s *Server) handleDeleteKey(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusNotFound, "key not found")
 		return
 	}
+	s.audit(r, "key_delete", s.keyOwnerName(k)+" / "+k.Label, "")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 

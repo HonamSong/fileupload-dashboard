@@ -20,13 +20,19 @@ function showApp() {
   $("#loginOverlay").classList.add("hidden");
   $("#loginPw").value = "";
   $("#sidebarUser").textContent = me.username + " (" + me.role + ")";
+  // Show the deployed version next to the app title (fetched live from the server).
+  api("GET", "/api/info").then(i => { if (i && i.version) $("#appVer").textContent = "(v" + i.version + ")"; }).catch(() => {});
   // Editor-only controls (view role hides these).
   document.querySelectorAll(".editor-only").forEach(el => el.classList.toggle("hidden", !canEdit()));
   // View role: no trash access (cannot restore/purge), so hide the tab entirely.
   const trashBtn = document.querySelector('.tabs [data-tab="trash"]');
   if (trashBtn) trashBtn.classList.toggle("hidden", !canEdit());
   if (canEdit()) updateTrashCount();
-  refreshKeysCache().then(() => selectTab("files"));
+  // Restore the last-used tab on reload (falls back to files; selectTab guards role).
+  const savedTab = localStorage.getItem("activeTab");
+  const validTabs = ["files", "keys", "trash", "settings"];
+  const startTab = validTabs.includes(savedTab) ? savedTab : "files";
+  refreshKeysCache().then(() => selectTab(startTab));
 }
 async function doLogin() {
   try {

@@ -67,6 +67,7 @@ func (s *Server) purgeOnce() {
 			log.Printf("purge: remove %s: %v", f.StoredPath, err)
 			continue
 		}
+		s.purgeFileVersions(f.ID)             // drop archived previous revisions
 		_ = s.store.deleteSharesForFile(f.ID) // drop its public share links
 		if err := s.store.deleteFileRow(f.ID); err != nil {
 			log.Printf("purge: db delete %s: %v", f.ID, err)

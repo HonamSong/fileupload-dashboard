@@ -4,6 +4,7 @@ async function selectTab(name) {
   if (name === "trash" && !canEdit()) name = "files";
   // Any tab switch leaves the Server settings view — guard unsaved changes.
   if (typeof guardLeaveServer === "function" && !(await guardLeaveServer(false))) return;
+  localStorage.setItem("activeTab", name); // 새로고침 시 같은 탭으로 복원
   document.querySelectorAll(".tabs button, .settingsbtn").forEach(x => x.classList.toggle("active", x.dataset.tab === name));
   ["files","trash","keys","settings"].forEach(t => $("#tab-"+t).classList.toggle("hidden", t !== name));
   if (name === "files") { loadFolders(); loadFiles(); }

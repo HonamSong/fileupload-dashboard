@@ -50,6 +50,9 @@
   .foldernode.active { background: var(--panel2); border-color: var(--line); }
   .foldernode .del { margin-left: auto; visibility: hidden; }
   .foldernode:hover .del { visibility: visible; }
+  .foldernode .kebab { margin-left: auto; flex-shrink: 0; cursor: pointer; color: var(--muted);
+    padding: 0 6px; font-size: 18px; line-height: 1; border-radius: 6px; user-select: none; }
+  .foldernode .kebab:hover { color: var(--text); background: var(--line); }
   .ftoggle { display: inline-block; width: 14px; text-align: center; font-size: 9px;
     color: var(--muted); cursor: pointer; flex-shrink: 0; }
   .ftoggle.empty { cursor: default; }
@@ -95,6 +98,21 @@
   .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.55);
     display: flex; align-items: center; justify-content: center; z-index: 100; }
   .modal-backdrop.hidden { display: none; }
+  /* 확인/입력 다이얼로그는 다른 모달(버전·이동 등) 위에서 열릴 수 있어 항상 최상단 */
+  #modal, #promptModal { z-index: 160; }
+  /* 설정 섹션(기능) 제목 — 하위 항목 구분용 볼드 헤더 */
+  .setting-title { font-size: 13px; font-weight: 600; color: var(--text); margin: 2px 0 8px; }
+  .setting-title.gap { margin-top: 24px; }
+  /* 파일 버전 목록(반응형 행) */
+  .verrow { display: flex; align-items: center; gap: 12px; padding: 10px 6px;
+    border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  .verrow:last-child { border-bottom: none; }
+  .verrow.cur { background: rgba(74,222,128,.06); border-radius: 8px; }
+  .verrow .vmeta { flex: 1; min-width: 200px; }
+  .verrow .vno { font-weight: 600; display: inline-flex; align-items: center; }
+  .verrow .vsub { color: var(--muted); font-size: 12px; margin-top: 3px; }
+  .verrow .vacts { display: flex; gap: 6px; flex-shrink: 0; }
+  .verrow .vacts .btn { white-space: nowrap; }
   .modal { background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
     padding: 22px; width: min(420px, 90vw); box-shadow: 0 20px 60px rgba(0,0,0,.5); }
   .modal h3 { margin: 0 0 8px; font-size: 16px; }
@@ -217,6 +235,8 @@
   /* access-log result badges */
   .pill.ok { color: #4ade80; border-color: rgba(74,222,128,.4); background: rgba(74,222,128,.08); }
   .pill.denied { color: #f87171; border-color: rgba(248,113,113,.5); background: rgba(248,113,113,.1); }
+  .pill.warnp { color: #fbbf24; border-color: rgba(251,191,36,.4); background: rgba(251,191,36,.08); }
+  .pill.muted { color: var(--muted); border-color: var(--line); background: var(--panel2); }
   tr.log-denied { background: rgba(248,113,113,.05); }
   /* access-log: block/allow action revealed on IP hover (owner only) */
   .ipact { visibility: hidden; margin-left: 8px; cursor: pointer; font-size: 11px;

@@ -142,6 +142,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	u, err := s.store.getUserByUsername(strings.TrimSpace(body.Username))
 	if err != nil || bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(body.Password)) != nil {
 		log.Printf("login failed user=%q (ip=%s)", body.Username, clientIP(r))
+		s.auditAs(strings.TrimSpace(body.Username), r, "login_failed", "", "아이디 또는 비밀번호 오류")
 		httpError(w, http.StatusUnauthorized, "아이디 또는 비밀번호가 올바르지 않습니다")
 		return
 	}
@@ -153,6 +154,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.store.updateLastLogin(u.ID, now)
+	s.auditAs(u.Username, r, "login", "", "")
 	http.SetCookie(w, &http.Cookie{
 		Name: sessionCookie, Value: token, Path: "/",
 		HttpOnly: true, SameSite: http.SameSiteLaxMode, Expires: exp,
@@ -161,6 +163,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	s.audit(r, "logout", "", "") // resolve actor before the session is dropped
 	if c, err := r.Cookie(sessionCookie); err == nil {
 		_ = s.store.deleteSession(c.Value)
 	}
@@ -221,5 +224,6 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, "db error: %v", err)
 		return
 	}
+	s.audit(r, "password_change", u.Username, "본인 비밀번호 변경")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "changed"})
 }

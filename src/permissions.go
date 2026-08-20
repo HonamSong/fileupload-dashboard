@@ -177,5 +177,10 @@ func (s *Server) handleSetFolderPerm(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, "db error: %v", err)
 		return
 	}
+	lvl := body.Level
+	if lvl == "" {
+		lvl = "기본값(해제)"
+	}
+	s.audit(r, "folder_perm", folder, u.Username+" → "+lvl)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

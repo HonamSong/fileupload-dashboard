@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"mime"
@@ -12,29 +13,29 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
 
 // ---- upload / list ----
 
-// storeUpload saves an uploaded file part into folder, overwriting a same-named
-// active file if present. Returns the file and whether it was newly created.
-func (s *Server) storeUpload(part multipart.File, header *multipart.FileHeader, folderArg string) (*File, bool, error) {
+// storeUpload saves an uploaded file part into folder. If a same-named active
+// file already exists, its current content is archived as a previous version
+// (subject to the configured retention limit) and replaced with the new content,
+// keeping the same file id/link. Returns the file and whether it was newly created.
+func (s *Server) storeUpload(part multipart.File, header *multipart.FileHeader, folderArg, uploader string) (*File, bool, error) {
 	name := filepath.Base(header.Filename)
 	folder := normalizeFolder(folderArg)
 	if !s.store.folderExists(folder) {
 		_ = s.store.createFolder(folder)
 	}
-
-	// Overwrite a same-named active file in this folder (keep its id/link).
 	existing, _ := s.store.getActiveFileByNameInFolder(name, folder)
-	id := newID(16)
-	if existing != nil {
-		id = existing.ID
-	}
-	stored := filepath.Join(s.filesDir, id)
-	dst, err := os.Create(stored) // truncates when overwriting
+
+	// Stream the upload to a temp file first (atomic + lets us hash before we
+	// touch any existing blob).
+	tmp := filepath.Join(s.filesDir, ".tmp-"+newID(8))
+	dst, err := os.Create(tmp)
 	if err != nil {
 		return nil, false, err
 	}
@@ -42,9 +43,7 @@ func (s *Server) storeUpload(part multipart.File, header *multipart.FileHeader, 
 	size, err := io.Copy(io.MultiWriter(dst, hasher), part)
 	dst.Close()
 	if err != nil {
-		if existing == nil {
-			os.Remove(stored)
-		}
+		os.Remove(tmp)
 		return nil, false, err
 	}
 	checksum := hex.EncodeToString(hasher.Sum(nil))
@@ -57,24 +56,165 @@ func (s *Server) storeUpload(part multipart.File, header *multipart.FileHeader, 
 		ct = "application/octet-stream"
 	}
 	now := time.Now().UTC()
+	limit := s.versionLimit()
 
-	if existing != nil {
-		if err := s.store.updateFileContent(id, size, ct, checksum, now); err != nil {
+	// Brand-new file.
+	if existing == nil {
+		id := newID(16)
+		stored := filepath.Join(s.filesDir, id)
+		f := &File{
+			ID: id, Name: name, Folder: folder, Size: size, Checksum: checksum,
+			ContentType: ct, StoredPath: stored, UploadedAt: now, UploadedBy: uploader,
+		}
+		if limit > 0 {
+			// Versioning on: the content becomes version 1 (the current pointer).
+			vid := newID(16)
+			if err := os.Rename(tmp, filepath.Join(s.versionsDir, vid)); err != nil {
+				os.Remove(tmp)
+				return nil, false, err
+			}
+			if err := copyFile(filepath.Join(s.versionsDir, vid), stored); err != nil {
+				return nil, false, err
+			}
+			f.CurrentVersionID = vid
+			if err := s.store.insertFile(f); err != nil {
+				return nil, false, err
+			}
+			_ = s.store.addFileVersion(&FileVersion{
+				ID: vid, FileID: id, VersionNo: 1, Name: name, Folder: folder,
+				Size: size, Checksum: checksum, ContentType: ct, UploadedBy: uploader, CreatedAt: now,
+			})
+			return f, true, nil
+		}
+		if err := os.Rename(tmp, stored); err != nil {
+			os.Remove(tmp)
 			return nil, false, err
 		}
-		f, err := s.store.getFile(id)
+		if err := s.store.insertFile(f); err != nil {
+			os.Remove(stored)
+			return nil, false, err
+		}
+		return f, true, nil
+	}
+
+	// Same-named file exists. Identical content → just touch metadata, no version.
+	stored := filepath.Join(s.filesDir, existing.ID)
+	if checksum == existing.Checksum {
+		os.Remove(tmp)
+		_ = s.store.updateFileContent(existing.ID, size, ct, checksum, now, uploader)
+		f, err := s.store.getFile(existing.ID)
 		return f, false, err
 	}
-	f := &File{
-		ID: id, Name: name, Folder: folder, Size: size, Checksum: checksum,
-		ContentType: ct, StoredPath: stored, UploadedAt: now,
+
+	// Versioning off → overwrite in place and drop any history.
+	if limit <= 0 {
+		if err := os.Rename(tmp, stored); err != nil {
+			os.Remove(tmp)
+			return nil, false, err
+		}
+		_ = s.store.updateFileContent(existing.ID, size, ct, checksum, now, uploader)
+		s.purgeFileVersions(existing.ID)
+		_ = s.store.setCurrentVersion(existing.ID, "")
+		f, err := s.store.getFile(existing.ID)
+		return f, false, err
 	}
-	if err := s.store.insertFile(f); err != nil {
-		os.Remove(stored)
+
+	// Versioning on. Legacy files whose current content isn't a version yet
+	// (uploaded before versioning, or while it was off) get snapshotted first so
+	// the existing content is preserved as a revision.
+	if existing.CurrentVersionID == "" {
+		lvid := newID(16)
+		if err := copyFile(existing.StoredPath, filepath.Join(s.versionsDir, lvid)); err == nil {
+			_ = s.store.addFileVersion(&FileVersion{
+				ID: lvid, FileID: existing.ID, VersionNo: s.store.nextVersionNo(existing.ID),
+				Name: existing.Name, Folder: existing.Folder, Size: existing.Size, Checksum: existing.Checksum,
+				ContentType: existing.ContentType, UploadedBy: existing.UploadedBy, CreatedAt: existing.UploadedAt,
+			})
+		}
+	}
+	// Add the new content as a new version and point current at it.
+	vid := newID(16)
+	if err := os.Rename(tmp, filepath.Join(s.versionsDir, vid)); err != nil {
+		os.Remove(tmp)
 		return nil, false, err
 	}
-	return f, true, nil
+	if err := copyFile(filepath.Join(s.versionsDir, vid), stored); err != nil {
+		return nil, false, err
+	}
+	_ = s.store.addFileVersion(&FileVersion{
+		ID: vid, FileID: existing.ID, VersionNo: s.store.nextVersionNo(existing.ID),
+		Name: name, Folder: existing.Folder, Size: size, Checksum: checksum,
+		ContentType: ct, UploadedBy: uploader, CreatedAt: now,
+	})
+	_ = s.store.updateFileContent(existing.ID, size, ct, checksum, now, uploader)
+	_ = s.store.setCurrentVersion(existing.ID, vid)
+	s.pruneVersionsKeep(existing.ID, limit, vid)
+	f, err := s.store.getFile(existing.ID)
+	return f, false, err
 }
+
+// copyFile copies src to dst (dst is truncated/created).
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
+}
+
+// pruneVersionsKeep keeps the newest `limit` revisions (always keeping the
+// current one) and deletes the rest (blobs + rows).
+func (s *Server) pruneVersionsKeep(fileID string, limit int, currentVID string) {
+	vers, err := s.store.listFileVersions(fileID) // newest first
+	if err != nil || len(vers) <= limit {
+		return
+	}
+	keep := map[string]bool{currentVID: true}
+	for _, v := range vers {
+		if len(keep) >= limit {
+			break
+		}
+		keep[v.ID] = true
+	}
+	for _, v := range vers {
+		if keep[v.ID] {
+			continue
+		}
+		os.Remove(filepath.Join(s.versionsDir, v.ID))
+		_ = s.store.deleteFileVersionRow(v.ID)
+	}
+}
+
+// versionLimit is the number of previous revisions kept per file (0 disables
+// versioning → re-uploads overwrite in place). Configurable in 설정 > Server.
+func (s *Server) versionLimit() int {
+	v, _ := s.store.getSetting("version_limit")
+	if v == "" {
+		return defaultVersionLimit
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || n < 0 {
+		return defaultVersionLimit
+	}
+	if n > maxVersionLimit {
+		n = maxVersionLimit
+	}
+	return n
+}
+
+const (
+	defaultVersionLimit = 10
+	maxVersionLimit     = 100
+)
 
 func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, s.cfg.MaxUpload)
@@ -91,20 +231,25 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer part.Close()
-	f, created, err := s.storeUpload(part, header, r.FormValue("folder"))
-	if err != nil {
-		httpError(w, http.StatusInternalServerError, "upload failed: %v", err)
-		return
-	}
 	actor := ""
 	if u := s.currentUser(r); u != nil {
 		actor = u.Username
+	}
+	f, created, err := s.storeUpload(part, header, r.FormValue("folder"), actor)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "upload failed: %v", err)
+		return
 	}
 	log.Printf("upload: %q -> %s (user=%s, ip=%s)", f.Name, f.Folder, actor, clientIP(r))
 	_ = s.store.addLog(&AccessLog{
 		Action: "upload", Actor: actor, FileID: f.ID,
 		IP: clientIP(r), UserAgent: r.UserAgent(), AccessedAt: time.Now().UTC(),
 	})
+	detail := ""
+	if !created {
+		detail = "새 버전(덮어쓰기)"
+	}
+	s.audit(r, "file_upload", strings.TrimRight(f.Folder, "/")+"/"+f.Name, detail)
 	status := http.StatusOK
 	if created {
 		status = http.StatusCreated
@@ -186,7 +331,7 @@ func (s *Server) handleAPIUpload(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusForbidden, "이 폴더에 대한 쓰기 권한이 없습니다")
 		return
 	}
-	f, created, err := s.storeUpload(part, header, folder)
+	f, created, err := s.storeUpload(part, header, folder, owner)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "upload failed: %v", err)
 		return
@@ -270,6 +415,7 @@ func (s *Server) handleCreateFolder(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	s.audit(r, "folder_create", path, "")
 	writeJSON(w, http.StatusCreated, map[string]string{"path": path})
 }
 
@@ -311,6 +457,7 @@ func (s *Server) handleDeleteFolder(w http.ResponseWriter, r *http.Request) {
 			httpError(w, http.StatusInternalServerError, "db error: %v", err)
 			return
 		}
+		s.audit(r, "folder_delete", path, fmt.Sprintf("하위 파일 %d개 휴지통 이동", moved))
 		writeJSON(w, http.StatusOK, map[string]any{"status": "folder-trashed", "trashed_files": moved})
 		return
 	}
@@ -318,6 +465,7 @@ func (s *Server) handleDeleteFolder(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusNotFound, "folder not found")
 		return
 	}
+	s.audit(r, "folder_delete", path, "")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
@@ -381,11 +529,13 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	if force {
 		// Permanent deletion: remove the blob wherever it lives, then the row.
 		os.Remove(f.StoredPath)
+		s.purgeFileVersions(id)             // drop archived previous revisions
 		_ = s.store.deleteSharesForFile(id) // drop its public share links
 		if err := s.store.deleteFileRow(id); err != nil {
 			httpError(w, http.StatusInternalServerError, "db error: %v", err)
 			return
 		}
+		s.audit(r, "file_purge", strings.TrimRight(f.Folder, "/")+"/"+f.Name, "완전 삭제")
 		writeJSON(w, http.StatusOK, map[string]string{"status": "purged"})
 		return
 	}
@@ -405,6 +555,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	purgeAt := now.Add(s.cfg.TrashTTL)
+	s.audit(r, "file_delete", strings.TrimRight(f.Folder, "/")+"/"+f.Name, "휴지통 이동")
 	writeJSON(w, http.StatusOK, map[string]any{"status": "trashed", "purge_at": purgeAt})
 }
 
@@ -429,6 +580,7 @@ func (s *Server) handleRestore(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusNotFound, "file not in trash")
 		return
 	}
+	s.audit(r, "file_restore", strings.TrimRight(f.Folder, "/")+"/"+f.Name, "휴지통에서 복구")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "restored"})
 }
 
@@ -467,7 +619,58 @@ func (s *Server) handleMoveFile(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, "db error: %v", err)
 		return
 	}
+	s.audit(r, "file_move", f.Name, strings.TrimRight(f.Folder, "/")+"/ → "+strings.TrimRight(folder, "/")+"/")
 	writeJSON(w, http.StatusOK, map[string]any{"status": "moved", "folder": folder})
+}
+
+// handleMoveFolder relocates a folder (and its whole subtree) under a new parent.
+func (s *Server) handleMoveFolder(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Path   string `json:"path"`   // 이동할 폴더
+		Parent string `json:"parent"` // 옮겨 갈 상위 폴더
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	src := normalizeFolder(body.Path)
+	parent := normalizeFolder(body.Parent)
+	if src == "/" {
+		httpError(w, http.StatusBadRequest, "루트 폴더는 이동할 수 없습니다")
+		return
+	}
+	name := src[strings.LastIndex(src, "/")+1:]
+	dst := normalizeFolder(strings.TrimRight(parent, "/") + "/" + name)
+	if dst == src {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "unchanged", "path": src})
+		return
+	}
+	// A folder cannot be moved into itself or one of its own descendants.
+	if dst == src || strings.HasPrefix(parent+"/", src+"/") {
+		httpError(w, http.StatusBadRequest, "폴더를 자기 자신 또는 하위 폴더로 이동할 수 없습니다")
+		return
+	}
+	// Need write on the source (to remove it) and on the destination parent (to place it).
+	if !s.allowWrite(w, r, src) || !s.allowWrite(w, r, parent) {
+		return
+	}
+	if !s.store.folderExists(src) {
+		httpError(w, http.StatusNotFound, "이동할 폴더를 찾을 수 없습니다")
+		return
+	}
+	if s.store.folderExists(dst) {
+		httpError(w, http.StatusConflict, "이동 위치에 같은 이름의 폴더가 이미 있습니다")
+		return
+	}
+	// Ensure the destination parent chain exists (it normally does).
+	if parent != "/" {
+		for _, p := range ancestorFolders(parent) {
+			_ = s.store.createFolder(p)
+		}
+	}
+	if err := s.store.moveFolderTree(src, dst); err != nil {
+		httpError(w, http.StatusInternalServerError, "db error: %v", err)
+		return
+	}
+	s.audit(r, "folder_move", name, src+" → "+dst)
+	writeJSON(w, http.StatusOK, map[string]any{"status": "moved", "path": dst})
 }
 
 // ---- view rendering ----

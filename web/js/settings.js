@@ -6,13 +6,20 @@ function showSettings() {
   $("#subLogs").classList.toggle("hidden", !isManager());
   $("#subServer").classList.toggle("hidden", !isOwner());  // 서버 설정은 owner만
   $("#subInfo").classList.toggle("hidden", !canEdit());    // Info는 user 이상 (view 제외)
-  selectSettingsSub("profile");                            // 기본은 프로필
+  // 새로고침 시 마지막으로 보던 하위탭 복원 (권한 없으면 프로필로).
+  const saved = localStorage.getItem("settingsSub");
+  const ok = saved === "profile"
+    || (saved === "info" && canEdit())
+    || ((saved === "users" || saved === "logs") && isManager())
+    || (saved === "server" && isOwner());
+  selectSettingsSub(ok ? saved : "profile");
 }
 async function selectSettingsSub(name) {
   if ((name === "users" || name === "logs") && !isManager()) return;
   if (name === "server" && !isOwner()) return;
   if (name === "info" && !canEdit()) return; // view 제외
   if (!(await guardLeaveServer(name === "server"))) return; // block leaving unsaved server changes
+  localStorage.setItem("settingsSub", name); // 새로고침 시 같은 하위탭으로 복원
   $("#subProfile").classList.toggle("active", name === "profile");
   $("#subUsers").classList.toggle("active", name === "users");
   $("#subLogs").classList.toggle("active", name === "logs");
@@ -24,7 +31,7 @@ async function selectSettingsSub(name) {
   $("#settings-server").classList.toggle("hidden", name !== "server");
   $("#settings-info").classList.toggle("hidden", name !== "info");
   if (name === "users") loadUsers();
-  if (name === "logs") loadLogs();
+  if (name === "logs") selectLogTab(localStorage.getItem("logTab") || "access");
   if (name === "server") loadServer();
   if (name === "info") loadInfo();
 }
@@ -143,6 +150,7 @@ function currentServerVals() {
     auto_block: $("#srvAutoBlock").checked ? "on" : "off",
     ab_threshold: $("#srvAbThreshold").value,
     ab_window: $("#srvAbWindow").value,
+    version_limit: $("#srvVersionLimit").value,
   };
 }
 function recomputeServerDirty() {
@@ -173,12 +181,26 @@ async function loadServer() {
     $("#srvAutoBlock").checked = s.auto_block === "on";
     $("#srvAbThreshold").value = s.auto_block_threshold || 10;
     $("#srvAbWindow").value = s.auto_block_window || 10;
+    $("#srvVersionLimit").value = (s.version_limit != null ? s.version_limit : 10);
     renderBlockedIPs(s.blocked_ips || []);
     renderGuardBanner(s);
     serverBaseline = currentServerVals();
     serverDirty = false;
     validateServerForm();
+    selectServerTab(localStorage.getItem("serverTab") || "general");
   } catch (e) { $("#srvSaved").textContent = e.message; }
+}
+
+// 설정 > Server 하위 탭 (일반 / IP 접근제어 / 자동 차단)
+function selectServerTab(name) {
+  if (!["general", "access", "auto"].includes(name)) name = "general";
+  localStorage.setItem("serverTab", name);
+  $("#srvTabGeneral").classList.toggle("active", name === "general");
+  $("#srvTabAccess").classList.toggle("active", name === "access");
+  $("#srvTabAuto").classList.toggle("active", name === "auto");
+  $("#srv-general").classList.toggle("hidden", name !== "general");
+  $("#srv-access").classList.toggle("hidden", name !== "access");
+  $("#srv-auto").classList.toggle("hidden", name !== "auto");
 }
 function renderBlockedIPs(list) {
   const el = $("#srvBlockedWrap"); if (!el) return;
@@ -233,6 +255,7 @@ async function saveServer() {
       auto_block: $("#srvAutoBlock").checked ? "on" : "off",
       auto_block_threshold: +$("#srvAbThreshold").value || 10,
       auto_block_window: +$("#srvAbWindow").value || 10,
+      version_limit: Math.max(0, Math.min(100, +$("#srvVersionLimit").value || 0)),
     });
     me.base_url = $("#srvBaseUrl").value.trim();  // reflect in commands immediately
     serverBaseline = currentServerVals();

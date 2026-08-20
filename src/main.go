@@ -29,10 +29,11 @@ type Config struct {
 }
 
 type Server struct {
-	cfg      Config
-	store    *Store
-	filesDir string
-	keyHMAC  []byte // secret for signing/verifying API keys
+	cfg         Config
+	store       *Store
+	filesDir    string
+	versionsDir string // archived previous revisions of re-uploaded files
+	keyHMAC     []byte // secret for signing/verifying API keys
 
 	failMu      sync.Mutex             // guards keyFails + sharePwFail
 	keyFails    map[string][]time.Time // per-IP recent bad-key attempts (auto-block)
@@ -59,7 +60,8 @@ func main() {
 	}
 
 	filesDir := filepath.Join(cfg.DataDir, "files")
-	for _, d := range []string{cfg.DataDir, filesDir} {
+	versionsDir := filepath.Join(cfg.DataDir, "versions")
+	for _, d := range []string{cfg.DataDir, filesDir, versionsDir} {
 		if err := os.MkdirAll(d, 0o750); err != nil {
 			log.Fatalf("mkdir %s: %v", d, err)
 		}
@@ -70,7 +72,7 @@ func main() {
 		log.Fatalf("open db: %v", err)
 	}
 
-	srv := &Server{cfg: cfg, store: store, filesDir: filesDir,
+	srv := &Server{cfg: cfg, store: store, filesDir: filesDir, versionsDir: versionsDir,
 		keyFails: map[string][]time.Time{}, sharePwFail: map[string][]time.Time{}}
 	srv.initKeyHMAC()
 	srv.backfillChecksums()
@@ -103,12 +105,17 @@ func main() {
 	mux.HandleFunc("GET /api/files/{id}/download", auth(srv.handleSessionDownload)) // 로컬 저장
 	mux.HandleFunc("POST /api/files/download-zip", auth(srv.handleDownloadZip))     // 다중 선택 zip
 	mux.HandleFunc("GET /api/files/{id}/preview", editor(srv.handlePreview))        // 미리보기: view 차단
+	mux.HandleFunc("GET /api/files/{id}/versions", auth(srv.handleListVersions))    // 버전 목록
+	mux.HandleFunc("GET /api/files/{id}/versions/{vid}/download", auth(srv.handleDownloadVersion))
+	mux.HandleFunc("POST /api/files/{id}/versions/{vid}/restore", editor(srv.handleRestoreVersion))
+	mux.HandleFunc("DELETE /api/files/{id}/versions/{vid}", editor(srv.handleDeleteVersion))
 	mux.HandleFunc("DELETE /api/files/{id}", editor(srv.handleDelete))              // 삭제
 	mux.HandleFunc("POST /api/files/{id}/restore", editor(srv.handleRestore))
 	mux.HandleFunc("GET /api/shares", auth(srv.handleListShares))             // 공유 링크 목록(본인/관리자 전체)
 	mux.HandleFunc("POST /api/shares", auth(srv.handleCreateShare))           // 공유 링크 생성(파일 1개 이상)
 	mux.HandleFunc("DELETE /api/shares/{token}", auth(srv.handleDeleteShare)) // 공유 링크 삭제
-	mux.HandleFunc("POST /api/files/{id}/move", editor(srv.handleMoveFile)) // 이동
+	mux.HandleFunc("POST /api/files/{id}/move", editor(srv.handleMoveFile)) // 파일 이동
+	mux.HandleFunc("POST /api/folders/move", editor(srv.handleMoveFolder))  // 폴더 이동
 	mux.HandleFunc("GET /api/trash", auth(srv.handleListTrash))
 	mux.HandleFunc("GET /api/folders", auth(srv.handleListFolders))
 	mux.HandleFunc("GET /api/folder-counts", auth(srv.handleFolderCounts))
@@ -123,7 +130,9 @@ func main() {
 	mux.HandleFunc("POST /api/keys/{id}/enable", editor(srv.handleEnableKey))
 	mux.HandleFunc("POST /api/keys/{id}/revoke", editor(srv.handleRevokeKey))
 	mux.HandleFunc("DELETE /api/keys/{id}", editor(srv.handleDeleteKey)) // user+ only
-	mux.HandleFunc("GET /api/logs", admin(srv.handleListLogs))
+	mux.HandleFunc("GET /api/logs", admin(srv.handleListLogs))               // 접근 로그(업/다운로드)
+	mux.HandleFunc("GET /api/audit-logs", admin(srv.handleListAudit))        // 감사 로그(로그인/CRUD)
+	mux.HandleFunc("GET /api/error-logs", admin(srv.handleListErrors))       // 에러 로그(시스템 오류)
 	mux.HandleFunc("GET /api/server", owner(srv.handleGetServer)) // base URL + IP rules (owner)
 	mux.HandleFunc("POST /api/server", owner(srv.handleSetServer))
 	mux.HandleFunc("POST /api/server/block", owner(srv.handleBlockIP))     // manually block an IP
@@ -144,7 +153,7 @@ func main() {
 	mux.HandleFunc("POST /s/{token}", srv.handleShareDownload)
 
 	log.Printf("listening on %s (data=%s, trashTTL=%s)", cfg.ListenAddr, cfg.DataDir, cfg.TrashTTL)
-	if err := http.ListenAndServe(cfg.ListenAddr, srv.securityHeaders(srv.uiGate(mux))); err != nil {
+	if err := http.ListenAndServe(cfg.ListenAddr, srv.securityHeaders(srv.uiGate(srv.errorLogger(mux)))); err != nil {
 		log.Fatal(err)
 	}
 }

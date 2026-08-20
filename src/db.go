@@ -24,6 +24,27 @@ type File struct {
 	DownloadCount int        `json:"download_count"`
 	DeletedAt     *time.Time `json:"deleted_at,omitempty"`
 	DeletedBy     string     `json:"deleted_by,omitempty"`
+	UploadedBy    string     `json:"uploaded_by,omitempty"`
+	// CurrentVersionID points at the file_versions row that is currently active
+	// (empty for non-versioned files). Restoring moves this pointer instead of
+	// creating a new revision.
+	CurrentVersionID string `json:"current_version_id,omitempty"`
+}
+
+// FileVersion is a previous content revision of a file, kept when a same-named
+// file is re-uploaded to the same folder. The current content lives in files;
+// older revisions are archived here (each with its own blob).
+type FileVersion struct {
+	ID          string    `json:"id"`      // blob id (basename under versionsDir)
+	FileID      string    `json:"file_id"` // the file this revision belongs to
+	VersionNo   int       `json:"version_no"`
+	Name        string    `json:"name"`
+	Folder      string    `json:"folder"`
+	Size        int64     `json:"size"`
+	Checksum    string    `json:"checksum"`
+	ContentType string    `json:"content_type"`
+	UploadedBy  string    `json:"uploaded_by"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 // User is a dashboard login account. Role is one of admin | user | view.
@@ -67,6 +88,26 @@ type AccessLog struct {
 	IP         string    `json:"ip"`
 	UserAgent  string    `json:"user_agent"`
 	AccessedAt time.Time `json:"accessed_at"`
+}
+
+// AuditLog records a user-initiated management action (login, file/folder/key CRUD).
+type AuditLog struct {
+	ID        int64     `json:"id"`
+	Actor     string    `json:"actor"`  // username (or "-" for anonymous)
+	Action    string    `json:"action"` // e.g. login, file_delete, folder_create, key_create
+	Target    string    `json:"target"` // affected resource (path, name, username, ...)
+	Detail    string    `json:"detail"` // extra context
+	IP        string    `json:"ip"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// ErrorLog records a system/server error (5xx response or panic).
+type ErrorLog struct {
+	ID        int64     `json:"id"`
+	Source    string    `json:"source"`  // "METHOD /path"
+	Message   string    `json:"message"` // error text / panic message
+	IP        string    `json:"ip"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // Store wraps the SQLite database.
@@ -118,6 +159,37 @@ CREATE TABLE IF NOT EXISTS access_logs (
 );
 CREATE INDEX IF NOT EXISTS idx_logs_key ON access_logs(api_key_id);
 CREATE INDEX IF NOT EXISTS idx_logs_time ON access_logs(accessed_at);
+CREATE TABLE IF NOT EXISTS audit_logs (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor      TEXT NOT NULL DEFAULT '',
+    action     TEXT NOT NULL,
+    target     TEXT NOT NULL DEFAULT '',
+    detail     TEXT NOT NULL DEFAULT '',
+    ip         TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMP NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_time ON audit_logs(created_at);
+CREATE TABLE IF NOT EXISTS error_logs (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    source     TEXT NOT NULL DEFAULT '',
+    message    TEXT NOT NULL DEFAULT '',
+    ip         TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMP NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_error_time ON error_logs(created_at);
+CREATE TABLE IF NOT EXISTS file_versions (
+    id           TEXT PRIMARY KEY,
+    file_id      TEXT NOT NULL,
+    version_no   INTEGER NOT NULL,
+    name         TEXT NOT NULL,
+    folder       TEXT NOT NULL,
+    size         INTEGER NOT NULL,
+    checksum     TEXT NOT NULL DEFAULT '',
+    content_type TEXT NOT NULL DEFAULT '',
+    uploaded_by  TEXT NOT NULL DEFAULT '',
+    created_at   TIMESTAMP NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_fv_file ON file_versions(file_id, version_no);
 CREATE TABLE IF NOT EXISTS folders (
     path       TEXT PRIMARY KEY,
     created_at TIMESTAMP NOT NULL
@@ -170,6 +242,12 @@ CREATE TABLE IF NOT EXISTS users (
 		return err
 	}
 	if err := s.ensureColumn("files", "deleted_by", `ALTER TABLE files ADD COLUMN deleted_by TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("files", "uploaded_by", `ALTER TABLE files ADD COLUMN uploaded_by TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("files", "current_version_id", `ALTER TABLE files ADD COLUMN current_version_id TEXT NOT NULL DEFAULT ''`); err != nil {
 		return err
 	}
 	// API key state columns (disable + revoke countdown) for pre-existing databases.
@@ -279,21 +357,28 @@ func newID(n int) string {
 
 func (s *Store) insertFile(f *File) error {
 	_, err := s.db.Exec(
-		`INSERT INTO files (id, name, folder, size, checksum, content_type, stored_path, uploaded_at, download_count, deleted_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)`,
-		f.ID, f.Name, f.Folder, f.Size, f.Checksum, f.ContentType, f.StoredPath, f.UploadedAt,
+		`INSERT INTO files (id, name, folder, size, checksum, content_type, stored_path, uploaded_at, download_count, deleted_at, uploaded_by, current_version_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?)`,
+		f.ID, f.Name, f.Folder, f.Size, f.Checksum, f.ContentType, f.StoredPath, f.UploadedAt, f.UploadedBy, f.CurrentVersionID,
 	)
 	return err
 }
 
+// setCurrentVersion moves the current-version pointer (restore) or sets it after
+// a new upload. Empty vid means the file is not versioned.
+func (s *Store) setCurrentVersion(fileID, vid string) error {
+	_, err := s.db.Exec(`UPDATE files SET current_version_id = ? WHERE id = ?`, vid, fileID)
+	return err
+}
+
 // fileColumns lists file columns in the order scanFile expects them.
-const fileColumns = "id, name, folder, size, checksum, content_type, stored_path, uploaded_at, download_count, deleted_at, COALESCE(deleted_by,'')"
+const fileColumns = "id, name, folder, size, checksum, content_type, stored_path, uploaded_at, download_count, deleted_at, COALESCE(deleted_by,''), COALESCE(uploaded_by,''), COALESCE(current_version_id,'')"
 
 func scanFile(row interface{ Scan(...any) error }) (*File, error) {
 	var f File
 	var deleted sql.NullTime
 	if err := row.Scan(&f.ID, &f.Name, &f.Folder, &f.Size, &f.Checksum, &f.ContentType, &f.StoredPath,
-		&f.UploadedAt, &f.DownloadCount, &deleted, &f.DeletedBy); err != nil {
+		&f.UploadedAt, &f.DownloadCount, &deleted, &f.DeletedBy, &f.UploadedBy, &f.CurrentVersionID); err != nil {
 		return nil, err
 	}
 	if deleted.Valid {
@@ -316,10 +401,74 @@ func (s *Store) getActiveFileByNameInFolder(name, folder string) (*File, error) 
 }
 
 // updateFileContent overwrites the metadata of an existing file (same id/link).
-func (s *Store) updateFileContent(id string, size int64, contentType, checksum string, uploadedAt time.Time) error {
+func (s *Store) updateFileContent(id string, size int64, contentType, checksum string, uploadedAt time.Time, uploadedBy string) error {
 	_, err := s.db.Exec(
-		`UPDATE files SET size = ?, content_type = ?, checksum = ?, uploaded_at = ? WHERE id = ?`,
-		size, contentType, checksum, uploadedAt, id)
+		`UPDATE files SET size = ?, content_type = ?, checksum = ?, uploaded_at = ?, uploaded_by = ? WHERE id = ?`,
+		size, contentType, checksum, uploadedAt, uploadedBy, id)
+	return err
+}
+
+// ---- file versions ----
+
+func (s *Store) nextVersionNo(fileID string) int {
+	var n sql.NullInt64
+	_ = s.db.QueryRow(`SELECT MAX(version_no) FROM file_versions WHERE file_id = ?`, fileID).Scan(&n)
+	if n.Valid {
+		return int(n.Int64) + 1
+	}
+	return 1
+}
+
+func (s *Store) addFileVersion(v *FileVersion) error {
+	_, err := s.db.Exec(
+		`INSERT INTO file_versions (id, file_id, version_no, name, folder, size, checksum, content_type, uploaded_by, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		v.ID, v.FileID, v.VersionNo, v.Name, v.Folder, v.Size, v.Checksum, v.ContentType, v.UploadedBy, v.CreatedAt)
+	return err
+}
+
+func scanFileVersion(row interface{ Scan(...any) error }) (*FileVersion, error) {
+	var v FileVersion
+	if err := row.Scan(&v.ID, &v.FileID, &v.VersionNo, &v.Name, &v.Folder, &v.Size, &v.Checksum,
+		&v.ContentType, &v.UploadedBy, &v.CreatedAt); err != nil {
+		return nil, err
+	}
+	return &v, nil
+}
+
+const versionColumns = "id, file_id, version_no, name, folder, size, checksum, content_type, COALESCE(uploaded_by,''), created_at"
+
+// listFileVersions returns a file's revisions, newest first.
+func (s *Store) listFileVersions(fileID string) ([]*FileVersion, error) {
+	rows, err := s.db.Query(`SELECT `+versionColumns+` FROM file_versions WHERE file_id = ? ORDER BY version_no DESC`, fileID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*FileVersion
+	for rows.Next() {
+		v, err := scanFileVersion(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) getFileVersion(fileID, versionID string) (*FileVersion, error) {
+	row := s.db.QueryRow(`SELECT `+versionColumns+` FROM file_versions WHERE file_id = ? AND id = ?`, fileID, versionID)
+	return scanFileVersion(row)
+}
+
+func (s *Store) countFileVersions(fileID string) (int, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM file_versions WHERE file_id = ?`, fileID).Scan(&n)
+	return n, err
+}
+
+func (s *Store) deleteFileVersionRow(id string) error {
+	_, err := s.db.Exec(`DELETE FROM file_versions WHERE id = ?`, id)
 	return err
 }
 
@@ -491,6 +640,35 @@ func (s *Store) trashFilesUnderFolder(path string, when time.Time, by string) (i
 	}
 	n, _ := res.RowsAffected()
 	return int(n), nil
+}
+
+// moveFolderTree relocates a folder and everything under it: the folder row and
+// all subfolders, every file's folder reference, and permission grants all have
+// their oldPath prefix rewritten to newPath — in one transaction. LENGTH/SUBSTR
+// are character-based in SQLite, so this is safe for multibyte (e.g. Korean) names.
+func (s *Store) moveFolderTree(oldPath, newPath string) error {
+	like := oldPath + "/%"
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(
+		`UPDATE folders SET path = ? || SUBSTR(path, LENGTH(?)+1) WHERE path = ? OR path LIKE ?`,
+		newPath, oldPath, oldPath, like); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(
+		`UPDATE files SET folder = ? || SUBSTR(folder, LENGTH(?)+1) WHERE folder = ? OR folder LIKE ?`,
+		newPath, oldPath, oldPath, like); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(
+		`UPDATE folder_permissions SET folder = ? || SUBSTR(folder, LENGTH(?)+1) WHERE folder = ? OR folder LIKE ?`,
+		newPath, oldPath, oldPath, like); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // deleteFolderTree removes the folder, all of its subfolders, and the matching
@@ -1110,6 +1288,56 @@ func (s *Store) listLogs(limit int) ([]*AccessLog, error) {
 		var l AccessLog
 		if err := rows.Scan(&l.ID, &l.Action, &l.Status, &l.Detail, &l.Actor, &l.APIKeyID, &l.KeyLabel, &l.FileID, &l.FileName,
 			&l.IP, &l.UserAgent, &l.AccessedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, &l)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) addAudit(l *AuditLog) error {
+	_, err := s.db.Exec(
+		`INSERT INTO audit_logs (actor, action, target, detail, ip, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		l.Actor, l.Action, l.Target, l.Detail, l.IP, l.CreatedAt)
+	return err
+}
+
+func (s *Store) listAudit(limit int) ([]*AuditLog, error) {
+	rows, err := s.db.Query(
+		`SELECT id, actor, action, target, detail, ip, created_at FROM audit_logs ORDER BY created_at DESC, id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*AuditLog
+	for rows.Next() {
+		var l AuditLog
+		if err := rows.Scan(&l.ID, &l.Actor, &l.Action, &l.Target, &l.Detail, &l.IP, &l.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, &l)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) addError(l *ErrorLog) error {
+	_, err := s.db.Exec(
+		`INSERT INTO error_logs (source, message, ip, created_at) VALUES (?, ?, ?, ?)`,
+		l.Source, l.Message, l.IP, l.CreatedAt)
+	return err
+}
+
+func (s *Store) listErrors(limit int) ([]*ErrorLog, error) {
+	rows, err := s.db.Query(
+		`SELECT id, source, message, ip, created_at FROM error_logs ORDER BY created_at DESC, id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*ErrorLog
+	for rows.Next() {
+		var l ErrorLog
+		if err := rows.Scan(&l.ID, &l.Source, &l.Message, &l.IP, &l.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, &l)
