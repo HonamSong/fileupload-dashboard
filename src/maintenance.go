@@ -95,4 +95,9 @@ func (s *Server) purgeOnce() {
 		}
 		log.Printf("purge: permanently deleted revoked key %s", id)
 	}
+
+	// Purge expired temporary keys once they're past the grace period.
+	if n, err := s.store.purgeExpiredKeys(cutoff); err == nil && n > 0 {
+		log.Printf("purge: removed %d expired API key(s)", n)
+	}
 }

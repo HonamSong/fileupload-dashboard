@@ -38,32 +38,45 @@ async function loadKeys() {
   $("#keyKind").classList.toggle("hidden", !isAdmin());
   if (!isAdmin()) $("#keyKind").value = "personal";
   applyOwnerConstraints(); // scope options + dup/limit for the selected owner
+  syncKeyOwnerVisibility();
   const b = $("#keysBody"); b.innerHTML = "";
   keys.forEach(k => {
     const tr = document.createElement("tr");
     let status, actions;
+    const isExpired = k.expires_at && new Date(k.expires_at) <= new Date();
     if (k.revoked) {
       tr.className = "dimmed";
       status = k.purge_at
         ? `<span style="color:var(--danger)">폐기됨 - ${daysLeft(k.purge_at)}일 뒤 완전 삭제</span>`
         : `<span style="color:var(--danger)">폐기됨</span>`;
       actions = `<button class="btn danger small" onclick="forceDeleteKey('${k.id}')">강제 삭제</button>`;
+    } else if (isExpired) {
+      tr.className = "dimmed";
+      status = `<span style="color:var(--danger)">만료됨</span>`;
+      actions = `<button class="btn danger small" onclick="forceDeleteKey('${k.id}')">삭제</button>`;
     } else if (k.disabled) {
       status = `<span style="color:var(--warn)">비활성</span>`;
       actions = `<button class="btn ghost small" onclick="enableKey('${k.id}')">활성화</button>
                  <button class="btn danger small" onclick="revokeKey('${k.id}')">폐기</button>`;
     } else {
-      status = `<span style="color:var(--ok)">활성</span>`;
+      const exp = k.expires_at ? `<br><span class="muted key">⏱ 만료 ${fmtTime(k.expires_at)}</span>` : "";
+      status = `<span style="color:var(--ok)">활성</span>${exp}`;
       actions = `<button class="btn ghost small" onclick="disableKey('${k.id}')">비활성화</button>`;
     }
+    // 서비스 키는 owner/admin만 관리(및 키 값 확인) 가능.
+    const canManage = isManager() || !k.is_service;
+    if (!canManage) actions = `<span class="muted" style="font-size:12px">관리자 전용</span>`;
     const owner = k.is_service
       ? `<br><span class="muted key">🔧 서비스</span>`
       : (admin ? `<br><span class="muted key">👤 ${esc(k.owner || '-')}</span>` : '');
+    const keyCell = canManage
+      ? `<span class="muted">${maskKey(k.key)}</span>
+         <button class="btn ghost small" style="margin-left:8px" onclick="copyText('${esc(k.key)}')">복사</button>`
+      : `<span class="muted">••••••••</span>`;
     tr.innerHTML = `
       <td class="name">${esc(k.label)}${owner}</td>
       <td>${scopeLabel(k.scope)}</td>
-      <td class="key"><span class="muted">${maskKey(k.key)}</span>
-        <button class="btn ghost small" style="margin-left:8px" onclick="copyText('${esc(k.key)}')">복사</button></td>
+      <td class="key">${keyCell}</td>
       <td class="muted">${fmtTime(k.created_at)}</td>
       <td class="muted">${fmtTime(k.last_used_at)}</td>
       <td><span class="pill">${k.use_count}</span></td>
@@ -72,6 +85,40 @@ async function loadKeys() {
     b.appendChild(tr);
   });
   if (!keys.length) b.innerHTML = `<tr><td colspan="8" class="muted">발급된 키가 없습니다.</td></tr>`;
+  populateHcKeys();
+}
+
+// ---- 헬스체크 (UI에서 /healthz 를 선택한 키로 호출) ----
+function populateHcKeys() {
+  const sel = $("#hcKeySel"); if (!sel) return;
+  const cur = sel.value;
+  const active = (keysCache || []).filter(k => !k.revoked && !k.disabled && !(k.expires_at && new Date(k.expires_at) <= new Date()));
+  sel.innerHTML = active.length
+    ? active.map(k => `<option value="${escAttr(k.key)}">${esc(k.label)}${k.is_service ? " (서비스)" : ""} · ${maskKey(k.key)}</option>`).join("")
+    : `<option value="">사용 가능한 키 없음</option>`;
+  if (cur && active.some(k => k.key === cur)) sel.value = cur;
+}
+async function runHealthCheck() {
+  const key = $("#hcKeySel").value;
+  const el = $("#hcResult");
+  if (!key) { el.textContent = "사용 가능한 키가 없습니다"; el.style.color = "var(--muted)"; return; }
+  el.textContent = "확인 중…"; el.style.color = "var(--muted)";
+  try {
+    const res = await fetch("/healthz", { headers: { "X-API-Key": key } });
+    if (res.ok) {
+      const d = await res.json().catch(() => ({}));
+      el.textContent = `✔ 정상 (200) · v${d.version || "-"} · uptime ${d.uptime_sec != null ? d.uptime_sec + "s" : "-"}`;
+      el.style.color = "#4ade80";
+    } else {
+      el.textContent = `✕ 실패 (${res.status})`;
+      el.style.color = "var(--danger)";
+    }
+  } catch (e) { el.textContent = "✕ 요청 실패: " + e.message; el.style.color = "var(--danger)"; }
+}
+function copyHealthCurl() {
+  const key = $("#hcKeySel").value || "<YOUR_API_KEY>";
+  const base = (me.base_url || location.origin).replace(/\/$/, "");
+  copyText(`curl -H "X-API-Key: ${key}" ${base}/healthz`);
 }
 // The currently-selected key owner: {id, name, role}. Empty id = self.
 function selectedOwner() {
@@ -95,12 +142,19 @@ function applyOwnerConstraints() {
   updateKeyBtn();
 }
 function onKeyOwnerChange() { applyOwnerConstraints(); }
+// 서비스 키는 "사용자 명의"가 필요 없으므로 드롭다운을 숨긴다(개인 키는 관리자에게만 노출).
+function syncKeyOwnerVisibility() {
+  const sel = $("#keyOwner"); if (!sel) return;
+  const isService = $("#keyKind") && $("#keyKind").value === "service";
+  sel.classList.toggle("hidden", isService || !isManager());
+}
 function scopeLabel(s) {
   if (s === "upload") return '<span style="color:var(--warn)">Upload</span>';
   if (s === "all") return '<span style="color:var(--accent)">Both</span>';
   return '<span class="muted">Download</span>';
 }
 function updateKeyBtn() {
+  syncKeyOwnerVisibility(); // 종류(개인/서비스)에 따라 사용자 명의 표시 토글
   const label = $("#keyLabel").value.trim();
   const isService = $("#keyKind").value === "service";
   const badChar = label && !/^[A-Za-z0-9_-]+$/.test(label);
@@ -120,8 +174,9 @@ async function createKey() {
   const scope = $("#keyScope").value;
   const is_service = $("#keyKind").value === "service";
   const owner = selectedOwner();
+  const expires_in_minutes = +($("#keyExpiry") ? $("#keyExpiry").value : 0) || 0;
   try {
-    const k = await api("POST", "/api/keys", { label, scope, is_service, user_id: owner.id });
+    const k = await api("POST", "/api/keys", { label, scope, is_service, user_id: owner.id, expires_in_minutes });
     $("#keyLabel").value = "";
     toast(owner.id ? `키 생성됨 (${owner.name} 명의, 키: ${k.key})` : "키 생성됨 (키: " + k.key + ")");
     loadKeys();

@@ -288,6 +288,11 @@ func (s *Server) handleAPIUpload(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusForbidden, "invalid, disabled, or revoked API key")
 		return
 	}
+	if key.expired(time.Now().UTC()) {
+		s.logDenied(r, "upload", "만료된 키 ("+maskKeyGo(secret)+")", s.keyOwnerName(key), key.ID, "")
+		httpError(w, http.StatusForbidden, "expired API key")
+		return
+	}
 	if !scopeAllowsUpload(key.Scope) {
 		s.logDenied(r, "upload", "업로드 권한 없는 키 (scope="+key.Scope+")", s.keyOwnerName(key), key.ID, "")
 		httpError(w, http.StatusForbidden, "이 키는 업로드용이 아닙니다 (업로드용 키를 사용하세요)")

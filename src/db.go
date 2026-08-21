@@ -71,7 +71,13 @@ type APIKey struct {
 	Disabled   bool       `json:"disabled"`
 	Revoked    bool       `json:"revoked"`
 	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
+	ExpiresAt  *time.Time `json:"expires_at,omitempty"` // nil = 만료 없음(영구)
 	UseCount   int        `json:"use_count"`
+}
+
+// expired reports whether the key has passed its expiry time.
+func (k *APIKey) expired(now time.Time) bool {
+	return k.ExpiresAt != nil && now.After(*k.ExpiresAt)
 }
 
 // AccessLog records a single upload or authenticated download.
@@ -278,6 +284,9 @@ CREATE TABLE IF NOT EXISTS users (
 	}
 	// Service keys (org-level, not tied to a person's limit).
 	if err := s.ensureColumn("api_keys", "is_service", `ALTER TABLE api_keys ADD COLUMN is_service INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("api_keys", "expires_at", `ALTER TABLE api_keys ADD COLUMN expires_at TIMESTAMP`); err != nil {
 		return err
 	}
 	// access_logs now records uploads too (action) and who did it (actor).
@@ -921,7 +930,7 @@ func (s *Store) folderContentCount(path string) (int, error) {
 
 // ---- api keys ----
 
-func (s *Store) createKey(label, userID, scope string, isService bool, key string) (*APIKey, error) {
+func (s *Store) createKey(label, userID, scope string, isService bool, key string, expiresAt *time.Time) (*APIKey, error) {
 	k := &APIKey{
 		ID:        newID(8),
 		Key:       key,
@@ -930,14 +939,19 @@ func (s *Store) createKey(label, userID, scope string, isService bool, key strin
 		IsService: isService,
 		UserID:    userID,
 		CreatedAt: time.Now().UTC(),
+		ExpiresAt: expiresAt,
 	}
 	svc := 0
 	if isService {
 		svc = 1
 	}
+	var exp any
+	if expiresAt != nil {
+		exp = *expiresAt
+	}
 	_, err := s.db.Exec(
-		`INSERT INTO api_keys (id, key, label, scope, is_service, user_id, created_at, revoked) VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
-		k.ID, k.Key, k.Label, k.Scope, svc, k.UserID, k.CreatedAt)
+		`INSERT INTO api_keys (id, key, label, scope, is_service, user_id, created_at, revoked, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+		k.ID, k.Key, k.Label, k.Scope, svc, k.UserID, k.CreatedAt, exp)
 	if err != nil {
 		return nil, err
 	}
@@ -947,10 +961,10 @@ func (s *Store) createKey(label, userID, scope string, isService bool, key strin
 // scanKeyRow scans a full key row incl. owner username and use_count.
 func scanKeyRow(row interface{ Scan(...any) error }) (*APIKey, error) {
 	var k APIKey
-	var last, revokedAt sql.NullTime
+	var last, revokedAt, expiresAt sql.NullTime
 	var disabled, revoked, service int
 	if err := row.Scan(&k.ID, &k.Key, &k.Label, &k.Scope, &service, &k.UserID, &k.Owner, &k.CreatedAt,
-		&last, &disabled, &revoked, &revokedAt, &k.UseCount); err != nil {
+		&last, &disabled, &revoked, &revokedAt, &expiresAt, &k.UseCount); err != nil {
 		return nil, err
 	}
 	if last.Valid {
@@ -958,6 +972,9 @@ func scanKeyRow(row interface{ Scan(...any) error }) (*APIKey, error) {
 	}
 	if revokedAt.Valid {
 		k.RevokedAt = &revokedAt.Time
+	}
+	if expiresAt.Valid {
+		k.ExpiresAt = &expiresAt.Time
 	}
 	k.IsService = service != 0
 	k.Disabled = disabled != 0
@@ -967,7 +984,7 @@ func scanKeyRow(row interface{ Scan(...any) error }) (*APIKey, error) {
 
 const keySelect = `
 	SELECT k.id, k.key, k.label, k.scope, k.is_service, COALESCE(k.user_id,''), COALESCE(u.username,''), k.created_at,
-	       k.last_used_at, k.disabled, k.revoked, k.revoked_at,
+	       k.last_used_at, k.disabled, k.revoked, k.revoked_at, k.expires_at,
 	       (SELECT COUNT(*) FROM access_logs l WHERE l.api_key_id = k.id) AS use_count
 	FROM api_keys k LEFT JOIN users u ON u.id = k.user_id`
 
@@ -978,11 +995,25 @@ func (s *Store) keyLabelExists(label, userID string) (bool, error) {
 	return n > 0, err
 }
 
-// countActiveKeys counts a user's non-revoked personal keys (against the per-user limit).
-func (s *Store) countActiveKeys(userID string) (int, error) {
+// countActiveKeys counts a user's non-revoked, non-expired personal keys
+// (against the per-user limit). Expired temporary keys don't consume the limit.
+func (s *Store) countActiveKeys(userID string, now time.Time) (int, error) {
 	var n int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM api_keys WHERE user_id = ? AND revoked = 0 AND is_service = 0`, userID).Scan(&n)
+	err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM api_keys WHERE user_id = ? AND revoked = 0 AND is_service = 0
+		 AND (expires_at IS NULL OR expires_at > ?)`, userID, now).Scan(&n)
 	return n, err
+}
+
+// purgeExpiredKeys removes keys whose expiry passed before the cutoff (a grace
+// period after expiry, so the UI can briefly show them as "만료됨").
+func (s *Store) purgeExpiredKeys(cutoff time.Time) (int, error) {
+	res, err := s.db.Exec(`DELETE FROM api_keys WHERE expires_at IS NOT NULL AND expires_at < ?`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
 }
 
 func (s *Store) queryKeys(query string, args ...any) ([]*APIKey, error) {
@@ -1012,18 +1043,27 @@ func (s *Store) listKeysForUser(userID string) ([]*APIKey, error) {
 	return s.queryKeys(keySelect+` WHERE k.user_id = ? ORDER BY k.created_at DESC`, userID)
 }
 
+// listKeysForUserWithService returns a user's own keys plus all service keys
+// (service keys are shared credentials, visible to user-or-above roles).
+func (s *Store) listKeysForUserWithService(userID string) ([]*APIKey, error) {
+	return s.queryKeys(keySelect+` WHERE k.user_id = ? OR k.is_service = 1 ORDER BY k.created_at DESC`, userID)
+}
+
 // lookupKey returns a key by its secret value (caller checks Disabled/Revoked).
 func (s *Store) lookupKey(secret string) (*APIKey, error) {
 	var k APIKey
-	var last, revokedAt sql.NullTime
+	var last, revokedAt, expiresAt sql.NullTime
 	var disabled, revoked int
 	var service int
 	err := s.db.QueryRow(
-		`SELECT id, key, label, scope, is_service, COALESCE(user_id,''), created_at, last_used_at, disabled, revoked, revoked_at
+		`SELECT id, key, label, scope, is_service, COALESCE(user_id,''), created_at, last_used_at, disabled, revoked, revoked_at, expires_at
 		 FROM api_keys WHERE key = ?`, secret).Scan(
-		&k.ID, &k.Key, &k.Label, &k.Scope, &service, &k.UserID, &k.CreatedAt, &last, &disabled, &revoked, &revokedAt)
+		&k.ID, &k.Key, &k.Label, &k.Scope, &service, &k.UserID, &k.CreatedAt, &last, &disabled, &revoked, &revokedAt, &expiresAt)
 	if err != nil {
 		return nil, err
+	}
+	if expiresAt.Valid {
+		k.ExpiresAt = &expiresAt.Time
 	}
 	k.IsService = service != 0
 	k.Disabled = disabled != 0

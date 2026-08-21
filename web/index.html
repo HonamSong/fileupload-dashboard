@@ -160,6 +160,15 @@
         <option value="upload">Upload</option>
         <option value="all">Both</option>
       </select>
+      <select id="keyExpiry" class="txt scope-select" title="만료 (임시 키)">
+        <option value="0">만료 없음</option>
+        <option value="60">1시간</option>
+        <option value="360">6시간</option>
+        <option value="1440">1일</option>
+        <option value="4320">3일</option>
+        <option value="10080">7일</option>
+        <option value="43200">30일</option>
+      </select>
       <button class="btn" id="createKeyBtn" onclick="createKey()" disabled>키 생성</button>
       <span id="keyDupMsg" class="hidden" style="color:var(--danger);font-size:13px">중복되었습니다</span>
     </div>
@@ -170,6 +179,16 @@
         <tbody id="keysBody"></tbody>
       </table>
     </div>
+
+    <div class="setting-title gap">헬스체크 (Health check)</div>
+    <div class="curl" style="flex-wrap:wrap;align-items:center;gap:10px">
+      <span class="muted" style="font-size:13px">키</span>
+      <select id="hcKeySel" class="txt scope-select"></select>
+      <button class="btn" onclick="runHealthCheck()">지금 확인</button>
+      <button class="btn ghost small" onclick="copyHealthCurl()">curl 복사</button>
+      <span id="hcResult" style="font-size:13px"></span>
+    </div>
+    <p class="muted" style="margin-top:8px;font-size:12px"><code>GET /healthz</code> 는 <code>X-API-Key</code> 헤더에 유효한(활성) 키가 있을 때만 200으로 응답합니다. 키가 없거나 틀리면 404를 반환합니다. 모니터링 도구에서 200 여부로 상태를 판단하세요.</p>
   </section>
 </main>
 

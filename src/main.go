@@ -142,6 +142,8 @@ func main() {
 	// {name} segment is cosmetic (lets curl -O save with a readable filename).
 	// gate = IP allow/block enforcement on the externally-exposed endpoints.
 	gate := srv.ipGate
+	// Health check — responds only to a valid, active API key (X-API-Key).
+	mux.HandleFunc("GET /healthz", gate(srv.handleHealth))
 	mux.HandleFunc("GET /d/{id}", gate(srv.handleDownload))
 	mux.HandleFunc("GET /d/{id}/{name}", gate(srv.handleDownload))
 	// Folder-path form: /f/<folder>/<name> (readable URL by folder + filename).

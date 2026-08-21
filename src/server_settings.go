@@ -232,7 +232,7 @@ func (s *Server) ipGate(h http.HandlerFunc) http.HandlerFunc {
 func (s *Server) uiGate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := r.URL.Path
-		if strings.HasPrefix(p, "/d/") || strings.HasPrefix(p, "/f/") || p == "/u" || strings.HasPrefix(p, "/s/") {
+		if strings.HasPrefix(p, "/d/") || strings.HasPrefix(p, "/f/") || p == "/u" || p == "/healthz" || strings.HasPrefix(p, "/s/") {
 			next.ServeHTTP(w, r) // API-key + public share endpoints are not UI-restricted
 			return
 		}

@@ -67,6 +67,11 @@ func (s *Server) authDownload(w http.ResponseWriter, r *http.Request) *APIKey {
 		s.notFoundDownload(w, r, fmt.Sprintf("revoked key id=%s label=%q", key.ID, key.Label))
 		return nil
 	}
+	if key.expired(time.Now().UTC()) {
+		s.logDenied(r, "download", "만료된 키 ("+maskKeyGo(secret)+")", owner, key.ID, "")
+		s.notFoundDownload(w, r, fmt.Sprintf("expired key id=%s label=%q", key.ID, key.Label))
+		return nil
+	}
 	if !scopeAllowsDownload(key.Scope) {
 		s.logDenied(r, "download", "다운로드 권한 없는 키 (scope="+key.Scope+")", owner, key.ID, "")
 		s.notFoundDownload(w, r, fmt.Sprintf("key not a download key id=%s scope=%s", key.ID, key.Scope))
