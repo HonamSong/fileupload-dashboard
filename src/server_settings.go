@@ -39,6 +39,7 @@ func (s *Server) handleGetServer(w http.ResponseWriter, r *http.Request) {
 		"auto_block_window":    s.settingInt("auto_block_window", 10),
 		"version_limit":        s.versionLimit(),
 		"version_limit_max":    maxVersionLimit,
+		"session_timeout":      s.sessionTimeout(),
 		"blocked_ips":          blocked,
 		"guard_recovery":       s.guardOff(),     // true = all IP limits currently bypassed
 		"guard_env":            s.cfg.IPGuardOff, // IP_GUARD_DISABLE is set on the container
@@ -64,6 +65,7 @@ func (s *Server) handleSetServer(w http.ResponseWriter, r *http.Request) {
 		AutoBlockThreshold int    `json:"auto_block_threshold"`
 		AutoBlockWindow    int    `json:"auto_block_window"`
 		VersionLimit       *int   `json:"version_limit"`
+		SessionTimeout     *int   `json:"session_timeout"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	for _, list := range []string{body.IPAllow, body.IPBlock, body.UIAllow, body.UIBlock} {
@@ -86,6 +88,9 @@ func (s *Server) handleSetServer(w http.ResponseWriter, r *http.Request) {
 	_ = s.store.setSetting("auto_block_window", strconv.Itoa(clampInt(body.AutoBlockWindow, 1, 1440, 10)))
 	if body.VersionLimit != nil { // 파일 버전 보관 개수 (0=버전 관리 안 함)
 		_ = s.store.setSetting("version_limit", strconv.Itoa(clampInt(*body.VersionLimit, 0, maxVersionLimit, defaultVersionLimit)))
+	}
+	if body.SessionTimeout != nil { // 세션 유휴 타임아웃(초)
+		_ = s.store.setSetting("session_timeout", strconv.Itoa(clampInt(*body.SessionTimeout, minSessionTimeout, maxSessionTimeout, defaultSessionTimeout)))
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

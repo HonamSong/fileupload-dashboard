@@ -12,6 +12,7 @@ async function checkAuth() {
   } catch { showLogin(); }
 }
 function showLogin() {
+  stopIdleWatch();
   $("#loginOverlay").classList.remove("hidden");
   $("#loginErr").classList.add("hidden");
   setTimeout(() => $("#loginUser").focus(), 0);
@@ -33,6 +34,41 @@ function showApp() {
   const validTabs = ["files", "keys", "trash", "settings"];
   const startTab = validTabs.includes(savedTab) ? savedTab : "files";
   refreshKeysCache().then(() => selectTab(startTab));
+  startIdleWatch();
+}
+
+// ---- 세션 유휴 타임아웃 (자동 로그아웃 + 활동 시 서버 세션 갱신) ----
+let idleTimer = null, lastPing = 0, idleWatching = false;
+function idleSecs() { return (me && me.session_timeout) ? me.session_timeout : 600; }
+function resetIdleTimer() {
+  if (idleTimer) clearTimeout(idleTimer);
+  idleTimer = setTimeout(onIdleTimeout, idleSecs() * 1000);
+}
+function onActivity() {
+  resetIdleTimer();
+  // 활동 중이면 서버 세션도 슬라이딩되도록 주기적으로(과하지 않게) 핑.
+  const now = Date.now();
+  const every = Math.max(15, Math.min(60, Math.floor(idleSecs() / 2))) * 1000;
+  if (now - lastPing > every) { lastPing = now; fetch("/api/me", { cache: "no-store" }).catch(() => {}); }
+}
+async function onIdleTimeout() {
+  stopIdleWatch();
+  try { await api("POST", "/api/logout"); } catch {}
+  showLogin();
+  toast("세션 시간이 만료되어 로그아웃되었습니다");
+}
+const IDLE_EVENTS = ["mousemove", "mousedown", "keydown", "scroll", "touchstart", "click"];
+function startIdleWatch() {
+  if (idleWatching) return;
+  idleWatching = true;
+  lastPing = Date.now();
+  IDLE_EVENTS.forEach(ev => document.addEventListener(ev, onActivity, { passive: true }));
+  resetIdleTimer();
+}
+function stopIdleWatch() {
+  idleWatching = false;
+  if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+  IDLE_EVENTS.forEach(ev => document.removeEventListener(ev, onActivity, { passive: true }));
 }
 async function doLogin() {
   try {

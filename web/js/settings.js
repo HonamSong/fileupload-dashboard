@@ -151,6 +151,7 @@ function currentServerVals() {
     ab_threshold: $("#srvAbThreshold").value,
     ab_window: $("#srvAbWindow").value,
     version_limit: $("#srvVersionLimit").value,
+    session_timeout: $("#srvSessionTimeout").value,
   };
 }
 function recomputeServerDirty() {
@@ -182,6 +183,7 @@ async function loadServer() {
     $("#srvAbThreshold").value = s.auto_block_threshold || 10;
     $("#srvAbWindow").value = s.auto_block_window || 10;
     $("#srvVersionLimit").value = (s.version_limit != null ? s.version_limit : 10);
+    $("#srvSessionTimeout").value = (s.session_timeout != null ? s.session_timeout : 600);
     renderBlockedIPs(s.blocked_ips || []);
     renderGuardBanner(s);
     serverBaseline = currentServerVals();
@@ -256,6 +258,7 @@ async function saveServer() {
       auto_block_threshold: +$("#srvAbThreshold").value || 10,
       auto_block_window: +$("#srvAbWindow").value || 10,
       version_limit: Math.max(0, Math.min(100, +$("#srvVersionLimit").value || 0)),
+      session_timeout: Math.max(60, Math.min(86400, +$("#srvSessionTimeout").value || 600)),
     });
     me.base_url = $("#srvBaseUrl").value.trim();  // reflect in commands immediately
     serverBaseline = currentServerVals();

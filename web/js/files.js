@@ -68,13 +68,16 @@ function renderUploadList() {
 
 async function doUpload(files) {
   const folder = currentFolder;
-  let ok = 0, fail = 0;
+  let ok = 0, fail = 0, lastErr = "";
   for (const f of files) {
     const fd = new FormData(); fd.append("file", f); fd.append("folder", folder);
     try { await api("POST", "/api/files", fd, true); ok++; }
-    catch { fail++; }
+    catch (e) {
+      fail++;
+      lastErr = (e.status ? "HTTP " + e.status + " " : "") + (e.message || "요청 실패");
+    }
   }
-  toast(`${ok}개 업로드${fail ? `, ${fail}개 실패` : ""}`);
+  toast(`${ok}개 업로드${fail ? `, ${fail}개 실패 (${lastErr})` : ""}`);
   loadFiles();
 }
 

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,7 +14,33 @@ import (
 // ---- auth ----
 
 const sessionCookie = "session"
-const sessionTTL = 7 * 24 * time.Hour
+const sessionTTL = 7 * 24 * time.Hour // 쿠키 수명(브라우저 보관용). 실제 유휴 만료는 서버 세션 expires_at으로 관리.
+
+const (
+	defaultSessionTimeout = 600   // 초 (10분)
+	minSessionTimeout     = 60    // 1분
+	maxSessionTimeout     = 86400 // 24시간
+)
+
+// sessionTimeout is the idle timeout in seconds (설정 > Server에서 변경). 활동이
+// 있으면 세션 만료가 이 값만큼 앞으로 밀리고, 유휴 시 만료됩니다.
+func (s *Server) sessionTimeout() int {
+	v, _ := s.store.getSetting("session_timeout")
+	if v == "" {
+		return defaultSessionTimeout
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil {
+		return defaultSessionTimeout
+	}
+	if n < minSessionTimeout {
+		n = minSessionTimeout
+	}
+	if n > maxSessionTimeout {
+		n = maxSessionTimeout
+	}
+	return n
+}
 
 // Roles (most → least privileged).
 const (
@@ -66,10 +93,13 @@ func (s *Server) currentUser(r *http.Request) *User {
 	if err != nil {
 		return nil
 	}
-	u, err := s.store.sessionUser(c.Value, time.Now().UTC())
+	now := time.Now().UTC()
+	u, err := s.store.sessionUser(c.Value, now)
 	if err != nil {
 		return nil
 	}
+	// Sliding idle timeout: any authenticated activity pushes expiry forward.
+	_ = s.store.touchSession(c.Value, now.Add(time.Duration(s.sessionTimeout())*time.Second))
 	return u
 }
 
@@ -148,8 +178,9 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	now := time.Now().UTC()
 	token := newID(24)
-	exp := now.Add(sessionTTL)
-	if err := s.store.createSession(token, u.ID, exp); err != nil {
+	// DB session uses the idle-timeout window (slides on activity); the cookie is
+	// kept long-lived so the browser keeps sending it between activity.
+	if err := s.store.createSession(token, u.ID, now.Add(time.Duration(s.sessionTimeout())*time.Second)); err != nil {
 		httpError(w, http.StatusInternalServerError, "db error: %v", err)
 		return
 	}
@@ -157,9 +188,9 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	s.auditAs(u.Username, r, "login", "", "")
 	http.SetCookie(w, &http.Cookie{
 		Name: sessionCookie, Value: token, Path: "/",
-		HttpOnly: true, SameSite: http.SameSiteLaxMode, Expires: exp,
+		HttpOnly: true, SameSite: http.SameSiteLaxMode, Expires: now.Add(sessionTTL),
 	})
-	writeJSON(w, http.StatusOK, map[string]any{"authenticated": true, "username": u.Username, "role": u.Role, "base_url": s.baseURL(), "max_upload": s.cfg.MaxUpload})
+	writeJSON(w, http.StatusOK, map[string]any{"authenticated": true, "username": u.Username, "role": u.Role, "base_url": s.baseURL(), "max_upload": s.cfg.MaxUpload, "session_timeout": s.sessionTimeout()})
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
@@ -177,7 +208,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]bool{"authenticated": false})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"authenticated": true, "username": u.Username, "role": u.Role, "base_url": s.baseURL(), "max_upload": s.cfg.MaxUpload})
+	writeJSON(w, http.StatusOK, map[string]any{"authenticated": true, "username": u.Username, "role": u.Role, "base_url": s.baseURL(), "max_upload": s.cfg.MaxUpload, "session_timeout": s.sessionTimeout()})
 }
 
 // baseURL returns the configured public base URL for commands, falling back to

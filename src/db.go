@@ -1173,6 +1173,12 @@ func (s *Store) sessionUser(token string, now time.Time) (*User, error) {
 	return scanUser(row)
 }
 
+// touchSession slides a session's expiry forward (idle timeout: activity extends it).
+func (s *Store) touchSession(token string, expiresAt time.Time) error {
+	_, err := s.db.Exec(`UPDATE sessions SET expires_at = ? WHERE token = ?`, expiresAt, token)
+	return err
+}
+
 func (s *Store) deleteSession(token string) error {
 	_, err := s.db.Exec(`DELETE FROM sessions WHERE token = ?`, token)
 	return err
