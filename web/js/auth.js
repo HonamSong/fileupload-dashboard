@@ -11,10 +11,21 @@ async function checkAuth() {
     if (m.authenticated) { me = m; showApp(); } else showLogin();
   } catch { showLogin(); }
 }
-function showLogin() {
+function showLogin(opts) {
   stopIdleWatch();
   $("#loginOverlay").classList.remove("hidden");
   $("#loginErr").classList.add("hidden");
+  // 세션 타임아웃으로 인한 로그아웃일 때만 안내 모달 표시(수동 로그아웃/일반 접속엔 미표시).
+  const tm = $("#timeoutModal");
+  if (tm) {
+    if (opts && opts.timedOut) {
+      tm.classList.remove("hidden");
+      const ok = $("#timeoutOk");
+      if (ok) ok.onclick = () => { tm.classList.add("hidden"); $("#loginUser").focus(); };
+    } else {
+      tm.classList.add("hidden");
+    }
+  }
   setTimeout(() => $("#loginUser").focus(), 0);
 }
 function showApp() {
@@ -54,8 +65,7 @@ function onActivity() {
 async function onIdleTimeout() {
   stopIdleWatch();
   try { await api("POST", "/api/logout"); } catch {}
-  showLogin();
-  toast("세션 시간이 만료되어 로그아웃되었습니다");
+  showLogin({ timedOut: true });
 }
 const IDLE_EVENTS = ["mousemove", "mousedown", "keydown", "scroll", "touchstart", "click"];
 function startIdleWatch() {

@@ -462,6 +462,16 @@
 </div><!-- /content -->
 </div><!-- /layout -->
 
+<!-- 세션 타임아웃 안내 (로그인 오버레이 위에 표시) -->
+<div id="timeoutModal" class="modal-backdrop hidden" style="z-index:250">
+  <div class="modal">
+    <h3>세션 만료</h3>
+    <p>일정 시간 동안 활동이 없어 자동으로 로그아웃되었습니다.
+다시 로그인해 주세요.</p>
+    <div class="actions"><button class="btn" id="timeoutOk">확인</button></div>
+  </div>
+</div>
+
 <div id="modal" class="modal-backdrop hidden">
   <div class="modal">
     <h3 id="modalTitle">확인</h3>

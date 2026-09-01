@@ -73,7 +73,7 @@ async function api(method, url, body, isForm) {
   if (body && !isForm) { opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(body); }
   if (isForm) opt.body = body;
   const res = await fetch(url, opt);
-  if (res.status === 401 && url !== "/api/login") showLogin(); // session expired → gate
+  if (res.status === 401 && url !== "/api/login") showLogin({ timedOut: true }); // 세션 만료 → 안내 후 로그인
   const txt = await res.text();
   let data = null; try { data = txt ? JSON.parse(txt) : null; } catch { data = txt; }
   if (!res.ok) { const err = new Error((data && data.error) || res.statusText); err.status = res.status; throw err; }
