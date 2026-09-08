@@ -114,8 +114,10 @@ func main() {
 	mux.HandleFunc("GET /api/shares", auth(srv.handleListShares))             // 공유 링크 목록(본인/관리자 전체)
 	mux.HandleFunc("POST /api/shares", auth(srv.handleCreateShare))           // 공유 링크 생성(파일 1개 이상)
 	mux.HandleFunc("DELETE /api/shares/{token}", auth(srv.handleDeleteShare)) // 공유 링크 삭제
-	mux.HandleFunc("POST /api/files/{id}/move", editor(srv.handleMoveFile)) // 파일 이동
-	mux.HandleFunc("POST /api/folders/move", editor(srv.handleMoveFolder))  // 폴더 이동
+	mux.HandleFunc("POST /api/files/{id}/move", editor(srv.handleMoveFile))     // 파일 이동
+	mux.HandleFunc("POST /api/files/{id}/rename", editor(srv.handleRenameFile)) // 파일 이름 변경
+	mux.HandleFunc("POST /api/folders/move", editor(srv.handleMoveFolder))      // 폴더 이동
+	mux.HandleFunc("POST /api/folders/rename", editor(srv.handleRenameFolder))  // 폴더 이름 변경
 	mux.HandleFunc("GET /api/trash", auth(srv.handleListTrash))
 	mux.HandleFunc("GET /api/folders", auth(srv.handleListFolders))
 	mux.HandleFunc("GET /api/folder-counts", auth(srv.handleFolderCounts))

@@ -678,6 +678,99 @@ func (s *Server) handleMoveFolder(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "moved", "path": dst})
 }
 
+// validName rejects empty / path-traversal / separator-containing names.
+func validName(name string) bool {
+	if name == "" || name == "." || name == ".." || len(name) > 255 {
+		return false
+	}
+	return !strings.ContainsAny(name, "/\\")
+}
+
+// handleRenameFile changes a file's display name (same id/link, blob untouched).
+func (s *Server) handleRenameFile(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var body struct {
+		Name string `json:"name"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	f, err := s.store.getFile(id)
+	if err != nil || f.DeletedAt != nil {
+		httpError(w, http.StatusNotFound, "file not found")
+		return
+	}
+	if !s.allowWrite(w, r, f.Folder) {
+		return
+	}
+	name := strings.TrimSpace(body.Name)
+	if !validName(name) {
+		httpError(w, http.StatusBadRequest, "잘못된 파일 이름입니다 (/ \\ 사용 불가)")
+		return
+	}
+	if name == f.Name {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "unchanged", "name": name})
+		return
+	}
+	if dup, _ := s.store.getActiveFileByNameInFolder(name, f.Folder); dup != nil && dup.ID != id {
+		httpError(w, http.StatusConflict, "같은 폴더에 같은 이름의 파일이 이미 있습니다")
+		return
+	}
+	ct := mime.TypeByExtension(filepath.Ext(name))
+	if ct == "" {
+		ct = f.ContentType
+	}
+	if err := s.store.renameFile(id, name, ct); err != nil {
+		httpError(w, http.StatusInternalServerError, "db error: %v", err)
+		return
+	}
+	s.audit(r, "file_rename", strings.TrimRight(f.Folder, "/")+"/"+f.Name, "→ "+name)
+	writeJSON(w, http.StatusOK, map[string]any{"status": "renamed", "name": name})
+}
+
+// handleRenameFolder renames a folder (and rewrites its subtree paths).
+func (s *Server) handleRenameFolder(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Path string `json:"path"`
+		Name string `json:"name"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	src := normalizeFolder(body.Path)
+	if src == "/" {
+		httpError(w, http.StatusBadRequest, "루트 폴더는 이름을 변경할 수 없습니다")
+		return
+	}
+	if !s.allowWrite(w, r, src) {
+		return
+	}
+	if !s.store.folderExists(src) {
+		httpError(w, http.StatusNotFound, "폴더를 찾을 수 없습니다")
+		return
+	}
+	name := strings.TrimSpace(body.Name)
+	if !validName(name) {
+		httpError(w, http.StatusBadRequest, "잘못된 폴더 이름입니다 (/ \\ 사용 불가)")
+		return
+	}
+	parent := "/"
+	if i := strings.LastIndex(src, "/"); i > 0 {
+		parent = src[:i]
+	}
+	dst := normalizeFolder(strings.TrimRight(parent, "/") + "/" + name)
+	if dst == src {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "unchanged", "path": src})
+		return
+	}
+	if s.store.folderExists(dst) {
+		httpError(w, http.StatusConflict, "같은 위치에 같은 이름의 폴더가 이미 있습니다")
+		return
+	}
+	if err := s.store.moveFolderTree(src, dst); err != nil {
+		httpError(w, http.StatusInternalServerError, "db error: %v", err)
+		return
+	}
+	s.audit(r, "folder_rename", src, "→ "+dst)
+	writeJSON(w, http.StatusOK, map[string]any{"status": "renamed", "path": dst})
+}
+
 // ---- view rendering ----
 
 type FileView struct {
@@ -687,8 +780,9 @@ type FileView struct {
 	CurlCommand  string     `json:"curl_command"`
 	ExecCommand  string     `json:"exec_command,omitempty"`
 	PurgeAt      *time.Time `json:"purge_at,omitempty"`
-	Version      int        `json:"version,omitempty"`       // 현재 버전 번호(버전 관리 중일 때)
-	VersionCount int        `json:"version_count,omitempty"` // 보관 중인 총 버전 수
+	Version       int        `json:"version,omitempty"`        // 현재 버전 번호(버전 관리 중일 때)
+	VersionCount  int        `json:"version_count,omitempty"`  // 보관 중인 총 버전 수
+	VersionLatest bool       `json:"version_latest,omitempty"` // 현재가 최신 버전인지
 }
 
 func (s *Server) fileView(f *File) FileView {
@@ -708,7 +802,7 @@ func (s *Server) fileView(f *File) FileView {
 		v.PurgeAt = &p
 	}
 	if f.CurrentVersionID != "" {
-		v.Version, v.VersionCount = s.store.currentVersionInfo(f.ID, f.CurrentVersionID)
+		v.Version, v.VersionCount, v.VersionLatest = s.store.currentVersionInfo(f.ID, f.CurrentVersionID)
 	}
 	return v
 }

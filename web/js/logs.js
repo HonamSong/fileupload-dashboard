@@ -81,6 +81,8 @@ const AUDIT_ACTIONS = {
   file_purge:     { label: "파일 완전삭제",   group: "file",   color: "denied" },
   file_restore:   { label: "파일 복구",       group: "file",   color: "ok" },
   file_move:      { label: "파일 이동",       group: "file",   color: "down" },
+  file_rename:    { label: "파일 이름변경",   group: "file",   color: "down" },
+  folder_rename:  { label: "폴더 이름변경",   group: "folder", color: "down" },
   file_version_restore: { label: "버전 되돌리기", group: "file", color: "down" },
   file_version_delete:  { label: "버전 삭제",     group: "file", color: "denied" },
   folder_create:  { label: "폴더 생성",       group: "folder", color: "ok" },

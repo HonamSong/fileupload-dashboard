@@ -196,12 +196,17 @@ function renderFilePage() {
     const versionBtn = canEdit()
       ? `<button class="btn ghost small" onclick="event.stopPropagation(); openVersions('${f.id}','${escAttr(f.name)}')">버전</button>`
       : "";
+    const renameBtn = canEdit()
+      ? `<button class="btn ghost small" onclick="event.stopPropagation(); renameFilePrompt('${f.id}','${escAttr(f.name)}')">이름변경</button>`
+      : "";
     // 최근(약 5분 내) 업로드 강조 + NEW 배지
     const isNew = f.uploaded_at && (Date.now() - new Date(f.uploaded_at).getTime()) < 5 * 60 * 1000;
     if (isNew) tr.classList.add("row-new");
     const newBadge = isNew ? '<span class="pill new">NEW</span>' : "";
-    // 현재 버전 번호 표시(버전 관리 중일 때)
-    const verTag = f.version ? ` <span class="muted" title="현재 버전 (총 ${f.version_count || f.version}개)" style="font-size:12px">v${f.version}</span>` : "";
+    // 현재 버전 번호 표시(버전 관리 중일 때). 최신 버전이면 /latest 표기.
+    const verTag = f.version
+      ? ` <span class="muted" title="현재 버전 (총 ${f.version_count || f.version}개)" style="font-size:12px">v${f.version}${f.version_latest ? "/latest" : ""}</span>`
+      : "";
     tr.innerHTML = `
       ${checkCell}
       <td class="name">${esc(f.name)}${verTag}${newBadge}<br><span class="muted key">${f.id}</span></td>
@@ -212,7 +217,7 @@ function renderFilePage() {
         : '<span class="muted">-</span>'}</td>
       <td class="muted">${fmtTime(f.uploaded_at)}</td>
       <td><span class="pill">${f.download_count}회</span></td>
-      <td><div class="row-actions">${previewBtn}${versionBtn}</div></td>`;
+      <td><div class="row-actions">${previewBtn}${versionBtn}${renameBtn}</div></td>`;
     b.appendChild(tr);
   });
   if (!total) b.innerHTML = `<tr><td colspan="7" class="muted">파일이 없습니다.</td></tr>`;
@@ -548,6 +553,20 @@ async function deleteVersion(id, vid, no, name) {
     toast(`v${no} 버전을 삭제했습니다`);
     openVersions(id, name); // 목록 갱신
   } catch (e) { toast("삭제 실패: " + e.message); }
+}
+
+// 파일 이름 변경 (현재 이름 프리필, 확장자 앞부분만 선택되도록 프리필)
+async function renameFilePrompt(id, curName) {
+  const name = await promptDialog("파일 이름 변경", "새 파일 이름을 입력하세요 (확장자 포함).",
+    { value: curName, placeholder: curName });
+  if (name === null) return;
+  const trimmed = name.trim();
+  if (!trimmed || trimmed === curName) return;
+  try {
+    const r = await api("POST", `/api/files/${id}/rename`, { name: trimmed });
+    toast(`이름 변경됨: ${r.name}`);
+    loadFiles();
+  } catch (e) { toast("이름 변경 실패: " + e.message); }
 }
 
 function copyCurl() {

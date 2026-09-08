@@ -470,15 +470,16 @@ func (s *Store) getFileVersion(fileID, versionID string) (*FileVersion, error) {
 	return scanFileVersion(row)
 }
 
-// currentVersionInfo returns the current version's number and the total version
-// count for a file (0,0 if none).
-func (s *Store) currentVersionInfo(fileID, currentVID string) (int, int) {
-	var no, cnt int
+// currentVersionInfo returns the current version's number, the total version
+// count, and whether the current version is the latest (highest version_no).
+func (s *Store) currentVersionInfo(fileID, currentVID string) (no int, count int, latest bool) {
+	var maxNo int
 	_ = s.db.QueryRow(
 		`SELECT COALESCE((SELECT version_no FROM file_versions WHERE id = ?), 0),
-		        (SELECT COUNT(*) FROM file_versions WHERE file_id = ?)`,
-		currentVID, fileID).Scan(&no, &cnt)
-	return no, cnt
+		        (SELECT COUNT(*) FROM file_versions WHERE file_id = ?),
+		        COALESCE((SELECT MAX(version_no) FROM file_versions WHERE file_id = ?), 0)`,
+		currentVID, fileID, fileID).Scan(&no, &count, &maxNo)
+	return no, count, no > 0 && no == maxNo
 }
 
 func (s *Store) countFileVersions(fileID string) (int, error) {
@@ -553,6 +554,12 @@ func (s *Store) restoreFile(id string) error {
 
 func (s *Store) deleteFileRow(id string) error {
 	_, err := s.db.Exec(`DELETE FROM files WHERE id = ?`, id)
+	return err
+}
+
+// renameFile changes a file's display name (blob path is id-based, so unchanged).
+func (s *Store) renameFile(id, name, contentType string) error {
+	_, err := s.db.Exec(`UPDATE files SET name = ?, content_type = ? WHERE id = ?`, name, contentType, id)
 	return err
 }
 

@@ -39,14 +39,14 @@ function confirmDialog(msg, { title = "확인", okLabel = "확인", danger = tru
 }
 
 // Custom prompt dialog. Returns the entered string, or null if cancelled.
-function promptDialog(title, msg, { password = false, placeholder = "" } = {}) {
+function promptDialog(title, msg, { password = false, placeholder = "", value = "" } = {}) {
   return new Promise(resolve => {
     const modal = $("#promptModal"), ok = $("#promptOk"), cancel = $("#promptCancel"), input = $("#promptInput");
     $("#promptTitle").textContent = title;
     $("#promptMsg").textContent = msg || "";
     input.type = password ? "password" : "text";
     input.placeholder = placeholder;
-    input.value = "";
+    input.value = value;
     modal.classList.remove("hidden");
     const close = result => {
       modal.classList.add("hidden");
@@ -57,7 +57,7 @@ function promptDialog(title, msg, { password = false, placeholder = "" } = {}) {
     cancel.onclick = () => close(null);
     modal.onclick = e => { if (e.target === modal) close(null); };
     input.onkeydown = e => { if (e.key === "Enter") close(input.value); else if (e.key === "Escape") close(null); };
-    setTimeout(() => input.focus(), 0);
+    setTimeout(() => { input.focus(); if (input.value) input.select(); }, 0);
   });
 }
 

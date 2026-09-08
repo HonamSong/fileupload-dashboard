@@ -73,6 +73,7 @@ function openFolderMenu(e, path) {
   const items = [];
   if (isAdmin()) items.push(`<button type="button" onclick="folderMenuAct('perm', '${escAttr(path)}')">🔒 권한</button>`);
   if (path !== "/" && folderWritable(path)) {
+    items.push(`<button type="button" onclick="folderMenuAct('rename', '${escAttr(path)}')">✎ 이름 변경</button>`);
     items.push(`<button type="button" onclick="folderMenuAct('move', '${escAttr(path)}')">↔ 이동</button>`);
     items.push(`<button type="button" class="danger" onclick="folderMenuAct('delete', '${escAttr(path)}')">🗑 삭제</button>`);
   }
@@ -90,7 +91,28 @@ function folderMenuAct(a, path) {
   closeFolderMenu();
   if (a === "perm") openFolderPerms(path);
   else if (a === "move") moveFolderPrompt(path);
+  else if (a === "rename") folderRenamePrompt(path);
   else if (a === "delete") deleteFolder(path);
+}
+
+// 폴더 이름 변경 (마지막 경로 세그먼트만 변경)
+async function folderRenamePrompt(path) {
+  if (path === "/") return;
+  const cur = path.split("/").pop();
+  const name = await promptDialog("폴더 이름 변경", `"${path}" 폴더의 새 이름을 입력하세요.`,
+    { value: cur, placeholder: cur });
+  if (name === null) return;
+  const trimmed = name.trim();
+  if (!trimmed || trimmed === cur) return;
+  try {
+    const r = await api("POST", "/api/folders/rename", { path, name: trimmed });
+    toast(`폴더 이름 변경됨 → ${r.path}`);
+    // 현재 보고 있던 폴더(또는 그 하위)면 새 경로로 따라간다.
+    if (currentFolder === path) currentFolder = r.path;
+    else if (currentFolder.startsWith(path + "/")) currentFolder = r.path + currentFolder.slice(path.length);
+    await loadFolders();
+    setFolder(currentFolder);
+  } catch (e) { toast("이름 변경 실패: " + e.message); }
 }
 // 바깥 클릭 / 스크롤 시 닫기
 document.addEventListener("click", e => {
