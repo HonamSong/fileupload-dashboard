@@ -470,6 +470,17 @@ func (s *Store) getFileVersion(fileID, versionID string) (*FileVersion, error) {
 	return scanFileVersion(row)
 }
 
+// currentVersionInfo returns the current version's number and the total version
+// count for a file (0,0 if none).
+func (s *Store) currentVersionInfo(fileID, currentVID string) (int, int) {
+	var no, cnt int
+	_ = s.db.QueryRow(
+		`SELECT COALESCE((SELECT version_no FROM file_versions WHERE id = ?), 0),
+		        (SELECT COUNT(*) FROM file_versions WHERE file_id = ?)`,
+		currentVID, fileID).Scan(&no, &cnt)
+	return no, cnt
+}
+
 func (s *Store) countFileVersions(fileID string) (int, error) {
 	var n int
 	err := s.db.QueryRow(`SELECT COUNT(*) FROM file_versions WHERE file_id = ?`, fileID).Scan(&n)

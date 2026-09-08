@@ -42,8 +42,16 @@
     #tab-files > .gutter { display: none; }
   }
   #filesBody tr { cursor: pointer; }
-  .foldertree { display: flex; flex-direction: column; gap: 2px; max-height: 220px; overflow: auto;
+  .foldertree { display: flex; flex-direction: column; gap: 2px; height: var(--tree-h, 220px);
+    max-height: none; overflow: auto;
     border: 1px solid var(--line); border-radius: 8px; padding: 6px; background: #0b0e1a; }
+  /* 폴더 트리 높이 조절 핸들 */
+  .tree-resizer { height: 8px; margin: 2px 0 0; cursor: row-resize; border-radius: 4px; }
+  .tree-resizer:hover, .tree-resizer.dragging { background: var(--line); }
+  /* 최근(약 5분 내) 업로드된 파일 강조 */
+  tr.row-new td { background: rgba(74,222,128,.10); }
+  tr.row-new td:first-child { box-shadow: inset 3px 0 0 #4ade80; }
+  .pill.new { color: #4ade80; border-color: rgba(74,222,128,.5); background: rgba(74,222,128,.15); margin-left: 6px; }
   .foldernode { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 6px;
     cursor: pointer; border: 1px solid transparent; white-space: nowrap; }
   .foldernode:hover { background: var(--panel2); }

@@ -41,9 +41,13 @@
   <section class="card files-pane">
     <div class="cardhead">
       <h2>폴더</h2>
-      <button class="btn small editor-only" id="newFolderBtn" onclick="openFolderModal(currentFolder)">+ 폴더 생성</button>
+      <span style="display:flex;gap:8px">
+        <button class="btn ghost small" id="collapseAllBtn" onclick="toggleCollapseAll()" title="폴더 모두 접기/펼치기">모두 접기</button>
+        <button class="btn small editor-only" id="newFolderBtn" onclick="openFolderModal(currentFolder)">+ 폴더 생성</button>
+      </span>
     </div>
     <div id="folderTree" class="foldertree"></div>
+    <div id="folderTreeResizer" class="tree-resizer" title="드래그하여 높이 조절"></div>
     <div class="cardhead" style="margin-top:18px">
       <h2 style="margin:0">파일 목록 <span class="muted" style="font-size:13px;font-weight:400" id="curPathLabel">/</span></h2>
       <span style="display:flex;gap:8px">

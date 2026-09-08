@@ -1,6 +1,16 @@
 // ---- folders ----
 let collapsed = new Set(); // folder paths currently collapsed
 let folderPerm = {};       // path -> effective level ("write"|"read"|"none")
+let folderParents = new Set(); // paths that have children (collapsible)
+
+// 모두 접기/펼치기 토글: 하나라도 펼쳐져 있으면 전부 접고, 아니면 전부 펼친다(루트 제외).
+function toggleCollapseAll() {
+  const anyExpanded = [...folderParents].some(p => p !== "/" && !collapsed.has(p));
+  if (anyExpanded) { folderParents.forEach(p => { if (p !== "/") collapsed.add(p); }); }
+  else { collapsed.clear(); }
+  const btn = $("#collapseAllBtn"); if (btn) btn.textContent = anyExpanded ? "모두 펼치기" : "모두 접기";
+  loadFolders();
+}
 
 function folderWritable(path) { return isAdmin() || folderPerm[path] === "write"; }
 function folderReadable(path) { return isAdmin() || folderPerm[path] === "write" || folderPerm[path] === "read"; }
@@ -22,6 +32,7 @@ async function loadFolders() {
     (children[parent] = children[parent] || []).push(p);
   });
   Object.values(children).forEach(a => a.sort());
+  folderParents = new Set(Object.keys(children));
 
   const box = $("#folderTree"); box.innerHTML = "";
   const render = (path, depth) => {

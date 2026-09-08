@@ -60,5 +60,37 @@ function initFilesGutter() {
 }
 initFilesGutter();
 
+// 폴더 트리 높이 조절 (드래그) — 값은 localStorage에 저장.
+function initFolderTreeResizer() {
+  const tree = $("#folderTree"), bar = $("#folderTreeResizer");
+  if (!tree || !bar) return;
+  const saved = localStorage.getItem("folderTreeH");
+  if (saved) tree.style.setProperty("--tree-h", saved);
+  let dragging = false, startY = 0, startH = 0;
+  bar.addEventListener("mousedown", e => {
+    dragging = true; bar.classList.add("dragging");
+    startY = e.clientY; startH = tree.getBoundingClientRect().height;
+    document.body.style.userSelect = "none"; document.body.style.cursor = "row-resize";
+    e.preventDefault();
+  });
+  window.addEventListener("mousemove", e => {
+    if (!dragging) return;
+    let h = Math.max(120, Math.min(700, startH + (e.clientY - startY)));
+    tree.style.setProperty("--tree-h", h + "px");
+  });
+  window.addEventListener("mouseup", () => {
+    if (!dragging) return;
+    dragging = false; bar.classList.remove("dragging");
+    document.body.style.userSelect = ""; document.body.style.cursor = "";
+    localStorage.setItem("folderTreeH", tree.style.getPropertyValue("--tree-h").trim());
+  });
+  // 더블클릭 시 기본 높이로 초기화
+  bar.addEventListener("dblclick", () => {
+    tree.style.removeProperty("--tree-h");
+    localStorage.removeItem("folderTreeH");
+  });
+}
+initFolderTreeResizer();
+
 // bootstrap
 checkAuth();

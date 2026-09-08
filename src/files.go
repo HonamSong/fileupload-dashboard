@@ -682,11 +682,13 @@ func (s *Server) handleMoveFolder(w http.ResponseWriter, r *http.Request) {
 
 type FileView struct {
 	*File
-	DownloadURL string     `json:"download_url"`
-	PathURL     string     `json:"path_url"`
-	CurlCommand string     `json:"curl_command"`
-	ExecCommand string     `json:"exec_command,omitempty"`
-	PurgeAt     *time.Time `json:"purge_at,omitempty"`
+	DownloadURL  string     `json:"download_url"`
+	PathURL      string     `json:"path_url"`
+	CurlCommand  string     `json:"curl_command"`
+	ExecCommand  string     `json:"exec_command,omitempty"`
+	PurgeAt      *time.Time `json:"purge_at,omitempty"`
+	Version      int        `json:"version,omitempty"`       // 현재 버전 번호(버전 관리 중일 때)
+	VersionCount int        `json:"version_count,omitempty"` // 보관 중인 총 버전 수
 }
 
 func (s *Server) fileView(f *File) FileView {
@@ -704,6 +706,9 @@ func (s *Server) fileView(f *File) FileView {
 	if f.DeletedAt != nil {
 		p := f.DeletedAt.Add(s.cfg.TrashTTL)
 		v.PurgeAt = &p
+	}
+	if f.CurrentVersionID != "" {
+		v.Version, v.VersionCount = s.store.currentVersionInfo(f.ID, f.CurrentVersionID)
 	}
 	return v
 }

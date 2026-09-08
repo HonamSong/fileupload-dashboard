@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // GET /api/files/{id}/versions — current file + its archived previous revisions.
@@ -101,11 +100,8 @@ func (s *Server) handleRestoreVersion(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, "version blob missing")
 		return
 	}
-	actor := ""
-	if u := s.currentUser(r); u != nil {
-		actor = u.Username
-	}
-	_ = s.store.updateFileContent(id, v.Size, v.ContentType, v.Checksum, time.Now().UTC(), actor)
+	// 되돌린 파일의 업로드 정보는 "그 버전"의 것으로 표시(날짜·업로더 모두 해당 버전 값).
+	_ = s.store.updateFileContent(id, v.Size, v.ContentType, v.Checksum, v.CreatedAt, v.UploadedBy)
 	_ = s.store.setCurrentVersion(id, v.ID)
 	s.audit(r, "file_version_restore", strings.TrimRight(f.Folder, "/")+"/"+f.Name, "v"+strconv.Itoa(v.VersionNo)+" (으)로 전환")
 	writeJSON(w, http.StatusOK, map[string]any{"status": "restored", "version_no": v.VersionNo})

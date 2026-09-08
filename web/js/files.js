@@ -196,9 +196,15 @@ function renderFilePage() {
     const versionBtn = canEdit()
       ? `<button class="btn ghost small" onclick="event.stopPropagation(); openVersions('${f.id}','${escAttr(f.name)}')">버전</button>`
       : "";
+    // 최근(약 5분 내) 업로드 강조 + NEW 배지
+    const isNew = f.uploaded_at && (Date.now() - new Date(f.uploaded_at).getTime()) < 5 * 60 * 1000;
+    if (isNew) tr.classList.add("row-new");
+    const newBadge = isNew ? '<span class="pill new">NEW</span>' : "";
+    // 현재 버전 번호 표시(버전 관리 중일 때)
+    const verTag = f.version ? ` <span class="muted" title="현재 버전 (총 ${f.version_count || f.version}개)" style="font-size:12px">v${f.version}</span>` : "";
     tr.innerHTML = `
       ${checkCell}
-      <td class="name">${esc(f.name)}<br><span class="muted key">${f.id}</span></td>
+      <td class="name">${esc(f.name)}${verTag}${newBadge}<br><span class="muted key">${f.id}</span></td>
       <td>${fmtBytes(f.size)}</td>
       <td class="key">${f.checksum
         ? `<span class="muted" title="${f.checksum}">${f.checksum.slice(0, 12)}…</span>
