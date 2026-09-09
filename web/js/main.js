@@ -7,7 +7,7 @@ async function selectTab(name) {
   localStorage.setItem("activeTab", name); // 새로고침 시 같은 탭으로 복원
   document.querySelectorAll(".tabs button, .settingsbtn").forEach(x => x.classList.toggle("active", x.dataset.tab === name));
   ["files","trash","keys","settings"].forEach(t => $("#tab-"+t).classList.toggle("hidden", t !== name));
-  if (name === "files") { loadFolders(); loadFiles(); }
+  if (name === "files") { loadFolders().then(() => setFolder(currentFolder)); }
   if (name === "trash") loadTrash();
   if (name === "keys") loadKeys();
   if (name === "settings") showSettings();
@@ -91,6 +91,7 @@ function initFolderTreeResizer() {
   });
 }
 initFolderTreeResizer();
+if (typeof initDropUpload === "function") initDropUpload();
 
 // bootstrap
 checkAuth();

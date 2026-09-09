@@ -1,7 +1,7 @@
 const $ = s => document.querySelector(s);
 let selectedId = null;
 let filesById = {};
-let currentFolder = "/";
+let currentFolder = (() => { try { return localStorage.getItem("currentFolder") || "/"; } catch { return "/"; } })();
 let selectedFiles = new Set();
 let keyLabels = new Set();
 

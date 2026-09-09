@@ -23,6 +23,9 @@
   #tab-files { display: flex; align-items: stretch; gap: 0; height: calc(100vh - 32px); overflow: hidden; }
   #tab-files.hidden { display: none; } /* ID beats .hidden — restore hide-on-switch */
   #tab-files > .files-pane { flex: 1 1 0; min-width: 300px; overflow-y: auto; }
+  /* 드래그앤드롭 업로드 활성 표시 */
+  #filesPane.drop-active { outline: 2px dashed var(--accent); outline-offset: -6px;
+    box-shadow: inset 0 0 0 9999px rgba(122,162,255,.06); }
   #tab-files > .right-col { flex: 0 0 var(--right-w, calc(50% - 8px)); min-width: 320px; max-width: calc(100% - 340px);
     height: 100%; overflow: hidden; min-height: 0; }
   /* Command card keeps its natural height; preview card fills the rest and
@@ -61,6 +64,9 @@
   .foldernode .kebab { margin-left: auto; flex-shrink: 0; cursor: pointer; color: var(--muted);
     padding: 0 6px; font-size: 18px; line-height: 1; border-radius: 6px; user-select: none; }
   .foldernode .kebab:hover { color: var(--text); background: var(--line); }
+  .row-actions .kebab { cursor: pointer; color: var(--muted); padding: 2px 8px; font-size: 18px;
+    line-height: 1; border-radius: 6px; user-select: none; }
+  .row-actions .kebab:hover { color: var(--text); background: var(--line); }
   .ftoggle { display: inline-block; width: 14px; text-align: center; font-size: 9px;
     color: var(--muted); cursor: pointer; flex-shrink: 0; }
   .ftoggle.empty { cursor: default; }

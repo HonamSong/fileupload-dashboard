@@ -37,6 +37,47 @@ function addPending(fileList) {
   renderUploadList();
 }
 
+// ---- 드래그앤드롭 업로드 (파일 목록 영역에 드롭 → 확인 모달) ----
+function isFileDrag(e) {
+  return e.dataTransfer && Array.from(e.dataTransfer.types || []).includes("Files");
+}
+function onFilesDropped(files) {
+  if (!files || !files.length) return;
+  if (!canEdit()) { toast("업로드 권한이 없습니다"); return; }
+  if (typeof folderWritable === "function" && !folderWritable(currentFolder)) {
+    toast(`"${currentFolder}" 폴더에 쓰기 권한이 없습니다`);
+    return;
+  }
+  // 확인 모달을 열고 드롭한 파일을 목록에 채운다(사용자가 '업로드'로 최종 확인).
+  openUploadModal();
+  addPending(files);
+}
+function initDropUpload() {
+  const zone = $("#filesPane");
+  if (!zone) return;
+  let depth = 0;
+  zone.addEventListener("dragenter", e => {
+    if (!isFileDrag(e)) return;
+    e.preventDefault(); depth++; zone.classList.add("drop-active");
+  });
+  zone.addEventListener("dragover", e => {
+    if (!isFileDrag(e)) return;
+    e.preventDefault(); e.dataTransfer.dropEffect = "copy";
+  });
+  zone.addEventListener("dragleave", e => {
+    if (!isFileDrag(e)) return;
+    depth--; if (depth <= 0) { depth = 0; zone.classList.remove("drop-active"); }
+  });
+  zone.addEventListener("drop", e => {
+    if (!isFileDrag(e)) return;
+    e.preventDefault(); depth = 0; zone.classList.remove("drop-active");
+    onFilesDropped(e.dataTransfer.files);
+  });
+  // 영역 밖에 드롭했을 때 브라우저가 파일을 여는 기본 동작 방지.
+  window.addEventListener("dragover", e => { if (isFileDrag(e)) e.preventDefault(); });
+  window.addEventListener("drop", e => { if (isFileDrag(e)) e.preventDefault(); });
+}
+
 function removePending(idx) {
   pendingUploads.splice(idx, 1);
   renderUploadList();
@@ -190,14 +231,9 @@ function renderFilePage() {
     if (f.id === selectedId) tr.classList.add("sel");
     tr.onclick = () => selectFile(f.id);
     const checkCell = `<td><input type="checkbox" class="rowcheck" data-id="${f.id}" ${selectedFiles.has(f.id) ? "checked" : ""} onclick="event.stopPropagation(); toggleSelect('${f.id}', this.checked)"></td>`;
-    const previewBtn = canEdit()
-      ? `<button class="btn ghost small" onclick="event.stopPropagation(); showPreview('${f.id}','${escAttr(f.name)}')">미리보기</button>`
-      : "";
-    const versionBtn = canEdit()
-      ? `<button class="btn ghost small" onclick="event.stopPropagation(); openVersions('${f.id}','${escAttr(f.name)}')">버전</button>`
-      : "";
-    const renameBtn = canEdit()
-      ? `<button class="btn ghost small" onclick="event.stopPropagation(); renameFilePrompt('${f.id}','${escAttr(f.name)}')">이름변경</button>`
+    // 파일 작업(버전/이름변경)은 세로 점 세개(⋮) 메뉴로 모음. 미리보기는 행 클릭 시 자동.
+    const kebab = canEdit()
+      ? `<span class="kebab" title="파일 작업" onclick="event.stopPropagation(); openFileMenu(event, '${f.id}', '${escAttr(f.name)}')">⋮</span>`
       : "";
     // 최근(약 5분 내) 업로드 강조 + NEW 배지
     const isNew = f.uploaded_at && (Date.now() - new Date(f.uploaded_at).getTime()) < 5 * 60 * 1000;
@@ -217,7 +253,7 @@ function renderFilePage() {
         : '<span class="muted">-</span>'}</td>
       <td class="muted">${fmtTime(f.uploaded_at)}</td>
       <td><span class="pill">${f.download_count}회</span></td>
-      <td><div class="row-actions">${previewBtn}${versionBtn}${renameBtn}</div></td>`;
+      <td><div class="row-actions" style="justify-content:flex-end">${kebab}</div></td>`;
     b.appendChild(tr);
   });
   if (!total) b.innerHTML = `<tr><td colspan="7" class="muted">파일이 없습니다.</td></tr>`;
@@ -457,13 +493,15 @@ function setCmdMode(mode) {
 function selectFile(id) {
   selectedId = id;
   document.querySelectorAll("#filesBody tr").forEach(r => r.classList.toggle("sel", r.dataset.id === id));
-  clearPreviewPane();
   showCommands(filesById[id]);
+  // 단일 선택 시 자동 미리보기(view 역할은 미리보기 불가 → 안내만).
+  const f = filesById[id];
+  if (canEdit() && f) loadPreview(id, f.name);
+  else clearPreviewPane();
 }
 
-// Preview button: select, then load and render the file content.
-async function showPreview(id, name) {
-  selectFile(id);
+// 파일 내용을 미리보기 영역에 로드/렌더 (선택 처리는 하지 않음 — 재귀 방지).
+async function loadPreview(id, name) {
   $("#previewName").textContent = name;
   const pane = $("#previewPane");
   pane.innerHTML = `<span class="muted">불러오는 중…</span>`;
@@ -554,6 +592,32 @@ async function deleteVersion(id, vid, no, name) {
     openVersions(id, name); // 목록 갱신
   } catch (e) { toast("삭제 실패: " + e.message); }
 }
+
+// 파일 작업 드롭다운(⋮): 버전 / 이름 변경. 목록이 스크롤될 수 있어 화면 고정 위치로 띄운다.
+function openFileMenu(e, id, name) {
+  e.stopPropagation();
+  if (typeof closeFolderMenu === "function") closeFolderMenu();
+  const m = $("#fileMenu"); if (!m) return;
+  m.innerHTML =
+    `<button type="button" onclick="fileMenuAct('version','${id}','${escAttr(name)}')">🕘 버전</button>` +
+    `<button type="button" onclick="fileMenuAct('rename','${id}','${escAttr(name)}')">✎ 이름 변경</button>`;
+  m.classList.remove("hidden");
+  const r = e.currentTarget.getBoundingClientRect();
+  const width = 150;
+  m.style.position = "fixed";
+  m.style.top = (r.bottom + 4) + "px";
+  m.style.left = Math.max(8, Math.min(r.right - width, window.innerWidth - width - 8)) + "px";
+}
+function closeFileMenu() { const m = $("#fileMenu"); if (m) m.classList.add("hidden"); }
+function fileMenuAct(a, id, name) {
+  closeFileMenu();
+  if (a === "version") openVersions(id, name);
+  else if (a === "rename") renameFilePrompt(id, name);
+}
+document.addEventListener("click", e => {
+  if (!e.target.closest("#fileMenu") && !e.target.closest(".kebab")) closeFileMenu();
+});
+document.addEventListener("scroll", closeFileMenu, true);
 
 // 파일 이름 변경 (현재 이름 프리필, 확장자 앞부분만 선택되도록 프리필)
 async function renameFilePrompt(id, curName) {

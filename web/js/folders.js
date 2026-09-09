@@ -23,6 +23,11 @@ async function loadFolders() {
   ]);
   folderPerm = access || {};
   const all = (paths && paths.length ? paths : ["/"]);
+  // 저장된 현재 폴더가 사라졌거나 접근 불가면 루트로 되돌린다(새로고침 복원 대비).
+  if (currentFolder !== "/" && (!all.includes(currentFolder) || !folderReadable(currentFolder))) {
+    currentFolder = "/";
+    try { localStorage.setItem("currentFolder", "/"); } catch {}
+  }
   // Build parent -> children map.
   const children = {};
   all.forEach(p => {
@@ -127,6 +132,7 @@ function toggleFolder(path) {
 
 function setFolder(path) {
   currentFolder = path;
+  try { localStorage.setItem("currentFolder", path); } catch {} // 새로고침 후에도 폴더 유지
   $("#curPathLabel").textContent = path;
   $("#uploadPath").textContent = path;
   document.querySelectorAll(".foldernode").forEach(n => n.classList.toggle("active", n.dataset.path === path));
