@@ -184,7 +184,7 @@ func (s *Server) recordKeyFailure(ip string) {
 	kept = append(kept, now)
 	s.keyFails[ip] = kept
 	if len(kept) >= threshold {
-		_ = s.store.addBlockedIP(ip, fmt.Sprintf("잘못된 키 %d회 시도 (자동 차단)", len(kept)), "system")
+		_ = s.store.addBlockedIP(ip, fmt.Sprintf("비정상 키 요청 %d회 (자동 차단)", len(kept)), "system")
 		delete(s.keyFails, ip)
 		log.Printf("auto-blocked ip=%s after %d bad key attempts", ip, len(kept))
 	}

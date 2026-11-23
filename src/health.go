@@ -14,6 +14,7 @@ import (
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	secret := r.Header.Get("X-API-Key")
 	if secret == "" {
+		s.recordKeyFailure(clientIP(r)) // 키 없이 반복 스캔도 자동 차단 대상
 		s.notFoundDownload(w, r, "health: missing X-API-Key header")
 		return
 	}

@@ -39,7 +39,8 @@ function renderPager(elId, page, pages, total, start, shown, sizeFn, gotoFn) {
 // ==================== Error Log ====================
 let errCache = [], errPage = 1;
 async function loadErrorLogs() {
-  try { errCache = (await api("GET", "/api/error-logs")) || []; }
+  const lim = +($("#errLimitSel") ? $("#errLimitSel").value : 500) || 500;
+  try { errCache = (await api("GET", "/api/error-logs?limit=" + lim)) || []; }
   catch (e) { errCache = []; }
   errPage = 1;
   renderErr();
@@ -103,7 +104,8 @@ const AUDIT_ACTIONS = {
 function auditInfo(a) { return AUDIT_ACTIONS[a] || { label: a || "-", group: "", color: "muted" }; }
 
 async function loadAuditLogs() {
-  try { auditCache = (await api("GET", "/api/audit-logs")) || []; }
+  const lim = +($("#auditLimitSel") ? $("#auditLimitSel").value : 500) || 500;
+  try { auditCache = (await api("GET", "/api/audit-logs?limit=" + lim)) || []; }
   catch (e) { auditCache = []; }
   auditPage = 1;
   renderAudit();

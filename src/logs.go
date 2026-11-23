@@ -21,12 +21,33 @@ func logLimit(r *http.Request, def int) int {
 // ---- access log (uploads/downloads + denied attempts) ----
 
 func (s *Server) handleListLogs(w http.ResponseWriter, r *http.Request) {
-	logs, err := s.store.listLogs(logLimit(r, 200))
+	from := parseLogTime(r.URL.Query().Get("from"), false)
+	to := parseLogTime(r.URL.Query().Get("to"), true)
+	logs, err := s.store.listLogs(logLimit(r, 200), from, to)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "db error: %v", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, logs)
+}
+
+// parseLogTime parses a query time bound. Accepts RFC3339 or a date-only
+// "YYYY-MM-DD" (treated as UTC; end=true → end of that day). Returns nil on empty/invalid.
+func parseLogTime(v string, end bool) *time.Time {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return nil
+	}
+	if t, err := time.Parse(time.RFC3339, v); err == nil {
+		return &t
+	}
+	if t, err := time.Parse("2006-01-02", v); err == nil {
+		if end {
+			t = t.Add(24*time.Hour - time.Second)
+		}
+		return &t
+	}
+	return nil
 }
 
 // ---- audit log (user-initiated management actions) ----

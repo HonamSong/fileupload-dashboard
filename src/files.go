@@ -262,6 +262,7 @@ func (s *Server) handleAPIUpload(w http.ResponseWriter, r *http.Request) {
 	secret := r.Header.Get("X-API-Key")
 	if secret == "" {
 		s.logDenied(r, "upload", "API 키 없음", "", "", "")
+		s.recordKeyFailure(clientIP(r)) // 키 없이 반복 스캔도 자동 차단 대상
 		httpError(w, http.StatusUnauthorized, "missing X-API-Key header")
 		return
 	}

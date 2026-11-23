@@ -250,6 +250,15 @@
   .pill.ok { color: #4ade80; border-color: rgba(74,222,128,.4); background: rgba(74,222,128,.08); }
   .pill.denied { color: #f87171; border-color: rgba(248,113,113,.5); background: rgba(248,113,113,.1); }
   .pill.warnp { color: #fbbf24; border-color: rgba(251,191,36,.4); background: rgba(251,191,36,.08); }
+  /* 로그 기간 통계 패널 */
+  .logstats { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 4px 0 12px; background: var(--panel2); }
+  .logstats .statrow { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .logstats .statpill { font-size: 13px; font-weight: 600; padding: 2px 10px; border-radius: 999px; border: 1px solid var(--line); }
+  .logstats .statpill.total { color: var(--text); }
+  .logstats .statpill.ok { color: #4ade80; border-color: rgba(74,222,128,.4); background: rgba(74,222,128,.1); }
+  .logstats .statpill.bad { color: #f87171; border-color: rgba(248,113,113,.5); background: rgba(248,113,113,.1); }
+  .logstats .statip { font-size: 12px; color: var(--muted); border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; }
+  .logstats .statip b { color: #f87171; margin-left: 2px; }
   .pill.muted { color: var(--muted); border-color: var(--line); background: var(--panel2); }
   tr.log-denied { background: rgba(248,113,113,.05); }
   /* access-log: block/allow action revealed on IP hover (owner only) */

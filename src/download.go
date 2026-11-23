@@ -38,6 +38,7 @@ func (s *Server) authDownload(w http.ResponseWriter, r *http.Request) *APIKey {
 	secret := r.Header.Get("X-API-Key")
 	if secret == "" {
 		s.logDenied(r, "download", "API 키 없음", "", "", "")
+		s.recordKeyFailure(clientIP(r)) // 키 없이 반복 스캔도 자동 차단 대상
 		s.notFoundDownload(w, r, "missing X-API-Key header")
 		return nil
 	}

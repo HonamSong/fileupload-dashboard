@@ -1334,7 +1334,20 @@ func (s *Store) addLog(l *AccessLog) error {
 	return err
 }
 
-func (s *Store) listLogs(limit int) ([]*AccessLog, error) {
+// listLogs returns access logs newest-first, optionally bounded by a time range
+// (from/to are nil to skip that bound).
+func (s *Store) listLogs(limit int, from, to *time.Time) ([]*AccessLog, error) {
+	where := ""
+	args := []any{}
+	if from != nil {
+		where += " AND l.accessed_at >= ?"
+		args = append(args, *from)
+	}
+	if to != nil {
+		where += " AND l.accessed_at <= ?"
+		args = append(args, *to)
+	}
+	args = append(args, limit)
 	rows, err := s.db.Query(`
 		SELECT l.id, COALESCE(l.action, 'download'), COALESCE(l.status, 'ok'), COALESCE(l.detail, ''),
 		       COALESCE(l.actor, ''), l.api_key_id, COALESCE(k.label, ''), l.file_id, COALESCE(f.name, ''),
@@ -1342,7 +1355,8 @@ func (s *Store) listLogs(limit int) ([]*AccessLog, error) {
 		FROM access_logs l
 		LEFT JOIN api_keys k ON k.id = l.api_key_id
 		LEFT JOIN files f ON f.id = l.file_id
-		ORDER BY l.accessed_at DESC LIMIT ?`, limit)
+		WHERE 1=1`+where+`
+		ORDER BY l.accessed_at DESC LIMIT ?`, args...)
 	if err != nil {
 		return nil, err
 	}

@@ -407,16 +407,67 @@ let logPageSize = +(localStorage.getItem("logPageSize") || 20);
 
 let logBlockedIPs = new Set(); // IPs currently blocked (owner-only, for the log actions)
 
+// datetime-local(로컬시간) → ISO(UTC) 변환. 비어있으면 "".
+function dtToISO(v) { if (!v) return ""; const d = new Date(v); return isNaN(d) ? "" : d.toISOString(); }
+// 빠른 기간 설정: 최근 n일(오늘 포함) ~ 지금.
+function setLogRange(days) {
+  const now = new Date();
+  const from = new Date(now); from.setDate(from.getDate() - (days - 1)); from.setHours(0, 0, 0, 0);
+  const pad = x => String(x).padStart(2, "0");
+  const fmt = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  $("#logFrom").value = fmt(from);
+  $("#logTo").value = fmt(now);
+  loadLogs();
+}
+function clearLogRange() { $("#logFrom").value = ""; $("#logTo").value = ""; loadLogs(); }
+
 async function loadLogs() {
-  logsCache = (await api("GET", "/api/logs")) || [];
+  const lim = +($("#logLimitSel") ? $("#logLimitSel").value : 200) || 200;
+  const from = dtToISO($("#logFrom") && $("#logFrom").value);
+  const to = dtToISO($("#logTo") && $("#logTo").value);
+  let url = "/api/logs?limit=" + lim;
+  if (from) url += "&from=" + encodeURIComponent(from);
+  if (to) url += "&to=" + encodeURIComponent(to);
+  logsCache = (await api("GET", url)) || [];
   // Owner: know which IPs are already blocked so we show 차단 vs 허용.
   if (isOwner()) {
     try { const s = await api("GET", "/api/server"); logBlockedIPs = new Set((s.blocked_ips || []).map(b => b.ip)); }
     catch { logBlockedIPs = new Set(); }
   } else { logBlockedIPs = new Set(); }
   $("#logsUpdated").textContent = "Updated " + new Date().toLocaleTimeString("en-US");
+  renderLogStats();
   logPage = 1;
   renderLogs();
+}
+
+// 기간 통계: 총 건수·성공·실패(거부) + 실패 IP별 상위.
+function renderLogStats() {
+  const el = $("#logStats"); if (!el) return;
+  const rows = logsCache || [];
+  if (!rows.length) { el.classList.add("hidden"); el.innerHTML = ""; return; }
+  const total = rows.length;
+  const denied = rows.filter(l => l.status === "denied");
+  const ok = total - denied.length;
+  // 실패 IP별 집계(상위 8개).
+  const byIp = {};
+  denied.forEach(l => { const ip = l.ip || "-"; byIp[ip] = (byIp[ip] || 0) + 1; });
+  const top = Object.entries(byIp).sort((a, b) => b[1] - a[1]);
+  const shown = top.slice(0, 8);
+  const ipList = shown.map(([ip, n]) =>
+    `<span class="statip">${esc(ip)} <b>${n}</b></span>`).join("");
+  const more = top.length > shown.length ? ` <span class="muted">외 ${top.length - shown.length}개 IP</span>` : "";
+  // 기간 표기
+  const f = $("#logFrom") && $("#logFrom").value, t = $("#logTo") && $("#logTo").value;
+  const period = (f || t) ? `${f ? f.replace("T", " ") : "처음"} ~ ${t ? t.replace("T", " ") : "지금"}` : "전체 기간(최근 불러온 범위)";
+  el.classList.remove("hidden");
+  el.innerHTML =
+    `<div class="statrow">
+       <span class="muted" style="font-size:12px">${esc(period)}</span>
+       <span class="statpill total">총 ${total}건</span>
+       <span class="statpill ok">성공 ${ok}건</span>
+       <span class="statpill bad">실패 ${denied.length}건</span>
+     </div>` +
+    (denied.length ? `<div class="statrow" style="margin-top:6px"><span class="muted" style="font-size:12px">실패 IP별</span>${ipList}${more}</div>` : "");
 }
 
 // Hover action on a log row's IP (owner only): block or unblock that IP.
