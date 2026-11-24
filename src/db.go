@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -60,7 +61,8 @@ type User struct {
 // APIKey is a credential used to authenticate downloads.
 type APIKey struct {
 	ID         string     `json:"id"`
-	Key        string     `json:"key"`
+	Key        string     `json:"key"`        // raw key — only populated in the create response (shown once)
+	KeyPrefix  string     `json:"key_prefix"` // short prefix for display in the list
 	Label      string     `json:"label"`
 	Scope      string     `json:"scope"` // download | upload | all
 	IsService  bool       `json:"is_service"`
@@ -217,6 +219,7 @@ CREATE TABLE IF NOT EXISTS shares (
     password_hash  TEXT NOT NULL DEFAULT '',
     expires_at     TIMESTAMP NOT NULL,
     created_by     TEXT NOT NULL DEFAULT '',
+    created_by_id  TEXT NOT NULL DEFAULT '',
     created_at     TIMESTAMP NOT NULL,
     download_count INTEGER NOT NULL DEFAULT 0
 );
@@ -311,12 +314,73 @@ CREATE TABLE IF NOT EXISTS users (
 	if err := s.ensureColumn("shares", "max_downloads", `ALTER TABLE shares ADD COLUMN max_downloads INTEGER NOT NULL DEFAULT 0`); err != nil {
 		return err
 	}
+	// shares are bound to the creator's user id (not username), so a deleted
+	// username that is later recreated can't revive the old owner's links.
+	if err := s.ensureColumn("shares", "created_by_id", `ALTER TABLE shares ADD COLUMN created_by_id TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	// Backfill created_by_id for legacy rows by matching the stored username to a
+	// current user. Rows whose username no longer resolves stay empty and fall back
+	// to the username lookup (legacy behavior) until they expire.
+	if _, err := s.db.Exec(
+		`UPDATE shares SET created_by_id = (SELECT u.id FROM users u WHERE u.username = shares.created_by)
+		 WHERE created_by_id = '' AND EXISTS (SELECT 1 FROM users u WHERE u.username = shares.created_by)`); err != nil {
+		log.Printf("migrate: shares.created_by_id backfill failed: %v", err)
+	}
 	// access_logs now records denied attempts too (status + reason).
 	if err := s.ensureColumn("access_logs", "status", `ALTER TABLE access_logs ADD COLUMN status TEXT NOT NULL DEFAULT 'ok'`); err != nil {
 		return err
 	}
 	if err := s.ensureColumn("access_logs", "detail", `ALTER TABLE access_logs ADD COLUMN detail TEXT NOT NULL DEFAULT ''`); err != nil {
 		return err
+	}
+	// API keys are stored hashed (SHA-256) with a short display prefix.
+	if err := s.ensureColumn("api_keys", "key_hash", `ALTER TABLE api_keys ADD COLUMN key_hash TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("api_keys", "key_prefix", `ALTER TABLE api_keys ADD COLUMN key_prefix TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	// Hash any raw keys at rest, store a prefix, and overwrite the raw key column so a
+	// DB/backup leak can't replay them. Runs on every startup (not flag-gated): the
+	// WHERE clause only matches rows that still carry a raw key, so it is idempotent
+	// and self-healing — already-hashed keys and keys created after this change never
+	// match. The legacy `key` column has a UNIQUE constraint, so it cannot be set to a
+	// shared '' for more than one row; we overwrite it with the row id (unique, not a
+	// secret). The raw secret is destroyed either way; `key` is no longer read for
+	// auth (lookupKey uses key_hash, listings use key_prefix).
+	// (An earlier version cleared key to '' and only the first row succeeded; the rest
+	// hit the UNIQUE constraint and were left unhashed and unusable.)
+	if rows, qerr := s.db.Query(`SELECT id, key FROM api_keys WHERE key_hash = '' OR key_hash IS NULL`); qerr == nil {
+		type kv struct{ id, key string }
+		var all []kv
+		for rows.Next() {
+			var id, key string
+			if rows.Scan(&id, &key) == nil && key != "" {
+				all = append(all, kv{id, key})
+			}
+		}
+		rows.Close()
+		var done int
+		for _, e := range all {
+			if _, uerr := s.db.Exec(`UPDATE api_keys SET key_hash = ?, key_prefix = ?, key = ? WHERE id = ?`,
+				sha256Hex(e.key), keyPrefix(e.key), e.id, e.id); uerr != nil {
+				log.Printf("migrate: hash api_key %s failed: %v", e.id, uerr)
+			} else {
+				done++
+			}
+		}
+		if done > 0 {
+			log.Printf("migrate: hashed %d pre-existing api key(s) at rest", done)
+		}
+	} else {
+		log.Printf("migrate: api_keys backfill query failed: %v", qerr)
+	}
+	_ = s.setSetting("keys_hashed", "1")
+	// One-time: invalidate legacy plaintext session tokens (now stored hashed).
+	if v, _ := s.getSetting("sessions_hashed"); v != "1" {
+		_, _ = s.db.Exec(`DELETE FROM sessions`)
+		_ = s.setSetting("sessions_hashed", "1")
 	}
 	// One-time: promote pre-existing admins to owner when no owner exists yet
 	// (introducing the owner tier). Runs once; later admins keep their role.
@@ -654,14 +718,22 @@ func (s *Store) deleteFolder(path string) error {
 	return affectedOne(res)
 }
 
+// likePrefix builds an escaped LIKE pattern ("<path>/%") for subtree prefix
+// matching. Folder names may contain LIKE wildcards (_ or %); escape them and use
+// with `... LIKE likePrefix(path) ESCAPE '\'` so e.g. /team_a never matches /teamXa.
+func likePrefix(path string) string {
+	p := strings.TrimRight(path, "/") + "/"
+	p = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(p)
+	return p + "%"
+}
+
 // trashFilesUnderFolder soft-deletes (moves to trash) every ACTIVE file that
 // lives in the folder or any subfolder, recording the deleter. Blobs stay on
 // disk so the files remain recoverable from the trash. Returns how many moved.
 func (s *Store) trashFilesUnderFolder(path string, when time.Time, by string) (int, error) {
-	prefix := strings.TrimRight(path, "/") + "/"
 	res, err := s.db.Exec(
-		`UPDATE files SET deleted_at = ?, deleted_by = ? WHERE deleted_at IS NULL AND (folder = ? OR folder LIKE ?)`,
-		when, by, path, prefix+"%")
+		`UPDATE files SET deleted_at = ?, deleted_by = ? WHERE deleted_at IS NULL AND (folder = ? OR folder LIKE ? ESCAPE '\')`,
+		when, by, path, likePrefix(path))
 	if err != nil {
 		return 0, err
 	}
@@ -674,44 +746,46 @@ func (s *Store) trashFilesUnderFolder(path string, when time.Time, by string) (i
 // their oldPath prefix rewritten to newPath — in one transaction. LENGTH/SUBSTR
 // are character-based in SQLite, so this is safe for multibyte (e.g. Korean) names.
 func (s *Store) moveFolderTree(oldPath, newPath string) error {
-	like := oldPath + "/%"
+	like := likePrefix(oldPath)
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 	if _, err := tx.Exec(
-		`UPDATE folders SET path = ? || SUBSTR(path, LENGTH(?)+1) WHERE path = ? OR path LIKE ?`,
+		`UPDATE folders SET path = ? || SUBSTR(path, LENGTH(?)+1) WHERE path = ? OR path LIKE ? ESCAPE '\'`,
 		newPath, oldPath, oldPath, like); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(
-		`UPDATE files SET folder = ? || SUBSTR(folder, LENGTH(?)+1) WHERE folder = ? OR folder LIKE ?`,
+		`UPDATE files SET folder = ? || SUBSTR(folder, LENGTH(?)+1) WHERE folder = ? OR folder LIKE ? ESCAPE '\'`,
 		newPath, oldPath, oldPath, like); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(
-		`UPDATE folder_permissions SET folder = ? || SUBSTR(folder, LENGTH(?)+1) WHERE folder = ? OR folder LIKE ?`,
+		`UPDATE folder_permissions SET folder = ? || SUBSTR(folder, LENGTH(?)+1) WHERE folder = ? OR folder LIKE ? ESCAPE '\'`,
 		newPath, oldPath, oldPath, like); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
-// deleteFolderTree removes the folder, all of its subfolders, and the matching
-// permission grants in one transaction. File rows are left untouched (they are
-// moved to trash separately by trashFilesUnderFolder).
+// deleteFolderTree removes the folder and all of its subfolders in one
+// transaction. File rows are left untouched (they are moved to trash separately
+// by trashFilesUnderFolder), and permission grants are deliberately KEPT: this is
+// only used to force-delete a non-empty folder whose files go to the (recoverable)
+// trash, so if a file is later restored the folder is recreated and must come back
+// with its original ACL — otherwise an explicit "none" block would vanish and a
+// default-read (user) role would regain access. Orphan grants for a path that is
+// never recreated are inert (they only apply once a folder with that path exists).
 func (s *Store) deleteFolderTree(path string) error {
-	prefix := strings.TrimRight(path, "/") + "/"
+	like := likePrefix(path)
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`DELETE FROM folders WHERE path = ? OR path LIKE ?`, path, prefix+"%"); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`DELETE FROM folder_permissions WHERE folder = ? OR folder LIKE ?`, path, prefix+"%"); err != nil {
+	if _, err := tx.Exec(`DELETE FROM folders WHERE path = ? OR path LIKE ? ESCAPE '\'`, path, like); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -821,18 +895,19 @@ type Share struct {
 	HasPassword   bool      `json:"has_password"`
 	PasswordHash  string    `json:"-"`
 	ExpiresAt     time.Time `json:"expires_at"`
-	CreatedBy     string    `json:"created_by"`
+	CreatedBy     string    `json:"created_by"`    // username (display/audit only)
+	CreatedByID   string    `json:"-"`             // creator user id (authoritative owner binding)
 	CreatedAt     time.Time `json:"created_at"`
 	DownloadCount int       `json:"download_count"`
 	MaxDownloads  int       `json:"max_downloads"` // 0 = unlimited
 }
 
-const shareCols = "token, file_id, COALESCE(file_ids,''), password_hash, expires_at, created_by, created_at, download_count, COALESCE(max_downloads,0)"
+const shareCols = "token, file_id, COALESCE(file_ids,''), password_hash, expires_at, created_by, COALESCE(created_by_id,''), created_at, download_count, COALESCE(max_downloads,0)"
 
 func scanShare(row interface{ Scan(...any) error }) (*Share, error) {
 	var sh Share
 	var ids string
-	if err := row.Scan(&sh.Token, &sh.FileID, &ids, &sh.PasswordHash, &sh.ExpiresAt, &sh.CreatedBy, &sh.CreatedAt, &sh.DownloadCount, &sh.MaxDownloads); err != nil {
+	if err := row.Scan(&sh.Token, &sh.FileID, &ids, &sh.PasswordHash, &sh.ExpiresAt, &sh.CreatedBy, &sh.CreatedByID, &sh.CreatedAt, &sh.DownloadCount, &sh.MaxDownloads); err != nil {
 		return nil, err
 	}
 	if ids != "" {
@@ -850,9 +925,9 @@ func (s *Store) createShare(sh *Share) error {
 		first = sh.FileIDs[0]
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO shares (token, file_id, file_ids, password_hash, expires_at, created_by, created_at, download_count, max_downloads)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)`,
-		sh.Token, first, strings.Join(sh.FileIDs, ","), sh.PasswordHash, sh.ExpiresAt, sh.CreatedBy, sh.CreatedAt, sh.MaxDownloads)
+		`INSERT INTO shares (token, file_id, file_ids, password_hash, expires_at, created_by, created_by_id, created_at, download_count, max_downloads)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+		sh.Token, first, strings.Join(sh.FileIDs, ","), sh.PasswordHash, sh.ExpiresAt, sh.CreatedBy, sh.CreatedByID, sh.CreatedAt, sh.MaxDownloads)
 	return err
 }
 
@@ -903,7 +978,10 @@ func (s *Store) deleteShare(token string) error {
 }
 
 func (s *Store) deleteSharesForFile(fileID string) error {
-	_, err := s.db.Exec(`DELETE FROM shares WHERE file_id = ?`, fileID)
+	// 다중 파일 공유(file_ids CSV)도 포함해 해당 파일이 들어간 모든 공유를 삭제.
+	_, err := s.db.Exec(
+		`DELETE FROM shares WHERE file_id = ? OR (',' || file_ids || ',') LIKE '%,' || ? || ',%'`,
+		fileID, fileID)
 	return err
 }
 
@@ -939,8 +1017,7 @@ func (s *Store) folderContentCount(path string) (int, error) {
 	if err := s.db.QueryRow(`SELECT COUNT(*) FROM files WHERE folder = ?`, path).Scan(&files); err != nil {
 		return 0, err
 	}
-	prefix := strings.TrimRight(path, "/") + "/"
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM folders WHERE path LIKE ?`, prefix+"%").Scan(&subs); err != nil {
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM folders WHERE path LIKE ? ESCAPE '\'`, likePrefix(path)).Scan(&subs); err != nil {
 		return 0, err
 	}
 	return files + subs, nil
@@ -948,10 +1025,18 @@ func (s *Store) folderContentCount(path string) (int, error) {
 
 // ---- api keys ----
 
+func keyPrefix(key string) string {
+	if len(key) <= 10 {
+		return key
+	}
+	return key[:10]
+}
+
 func (s *Store) createKey(label, userID, scope string, isService bool, key string, expiresAt *time.Time) (*APIKey, error) {
 	k := &APIKey{
 		ID:        newID(8),
-		Key:       key,
+		Key:       key, // raw returned to caller once (not persisted)
+		KeyPrefix: keyPrefix(key),
 		Label:     label,
 		Scope:     scope,
 		IsService: isService,
@@ -967,9 +1052,13 @@ func (s *Store) createKey(label, userID, scope string, isService bool, key strin
 	if expiresAt != nil {
 		exp = *expiresAt
 	}
+	// Store only the hash + prefix; the raw key is never persisted. The legacy `key`
+	// column is NOT NULL UNIQUE, so we fill it with the row id (unique, not a secret)
+	// rather than '' — otherwise a second key would collide on the UNIQUE constraint.
 	_, err := s.db.Exec(
-		`INSERT INTO api_keys (id, key, label, scope, is_service, user_id, created_at, revoked, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)`,
-		k.ID, k.Key, k.Label, k.Scope, svc, k.UserID, k.CreatedAt, exp)
+		`INSERT INTO api_keys (id, key, key_hash, key_prefix, label, scope, is_service, user_id, created_at, revoked, expires_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+		k.ID, k.ID, sha256Hex(key), k.KeyPrefix, k.Label, k.Scope, svc, k.UserID, k.CreatedAt, exp)
 	if err != nil {
 		return nil, err
 	}
@@ -981,10 +1070,11 @@ func scanKeyRow(row interface{ Scan(...any) error }) (*APIKey, error) {
 	var k APIKey
 	var last, revokedAt, expiresAt sql.NullTime
 	var disabled, revoked, service int
-	if err := row.Scan(&k.ID, &k.Key, &k.Label, &k.Scope, &service, &k.UserID, &k.Owner, &k.CreatedAt,
+	if err := row.Scan(&k.ID, &k.KeyPrefix, &k.Label, &k.Scope, &service, &k.UserID, &k.Owner, &k.CreatedAt,
 		&last, &disabled, &revoked, &revokedAt, &expiresAt, &k.UseCount); err != nil {
 		return nil, err
 	}
+	k.Key = "" // 저장된 원문은 없음(해시만). 목록에는 prefix만 노출.
 	if last.Valid {
 		k.LastUsedAt = &last.Time
 	}
@@ -1001,7 +1091,7 @@ func scanKeyRow(row interface{ Scan(...any) error }) (*APIKey, error) {
 }
 
 const keySelect = `
-	SELECT k.id, k.key, k.label, k.scope, k.is_service, COALESCE(k.user_id,''), COALESCE(u.username,''), k.created_at,
+	SELECT k.id, COALESCE(k.key_prefix,''), k.label, k.scope, k.is_service, COALESCE(k.user_id,''), COALESCE(u.username,''), k.created_at,
 	       k.last_used_at, k.disabled, k.revoked, k.revoked_at, k.expires_at,
 	       (SELECT COUNT(*) FROM access_logs l WHERE l.api_key_id = k.id) AS use_count
 	FROM api_keys k LEFT JOIN users u ON u.id = k.user_id`
@@ -1074,9 +1164,9 @@ func (s *Store) lookupKey(secret string) (*APIKey, error) {
 	var disabled, revoked int
 	var service int
 	err := s.db.QueryRow(
-		`SELECT id, key, label, scope, is_service, COALESCE(user_id,''), created_at, last_used_at, disabled, revoked, revoked_at, expires_at
-		 FROM api_keys WHERE key = ?`, secret).Scan(
-		&k.ID, &k.Key, &k.Label, &k.Scope, &service, &k.UserID, &k.CreatedAt, &last, &disabled, &revoked, &revokedAt, &expiresAt)
+		`SELECT id, COALESCE(key_prefix,''), label, scope, is_service, COALESCE(user_id,''), created_at, last_used_at, disabled, revoked, revoked_at, expires_at
+		 FROM api_keys WHERE key_hash = ?`, sha256Hex(secret)).Scan(
+		&k.ID, &k.KeyPrefix, &k.Label, &k.Scope, &service, &k.UserID, &k.CreatedAt, &last, &disabled, &revoked, &revokedAt, &expiresAt)
 	if err != nil {
 		return nil, err
 	}
@@ -1116,9 +1206,9 @@ func (s *Store) getKey(id string) (*APIKey, error) {
 	var disabled, revoked int
 	var service int
 	err := s.db.QueryRow(
-		`SELECT id, key, label, scope, is_service, COALESCE(user_id,''), created_at, last_used_at, disabled, revoked, revoked_at
+		`SELECT id, COALESCE(key_prefix,''), label, scope, is_service, COALESCE(user_id,''), created_at, last_used_at, disabled, revoked, revoked_at
 		 FROM api_keys WHERE id = ?`, id).Scan(
-		&k.ID, &k.Key, &k.Label, &k.Scope, &service, &k.UserID, &k.CreatedAt, &last, &disabled, &revoked, &revokedAt)
+		&k.ID, &k.KeyPrefix, &k.Label, &k.Scope, &service, &k.UserID, &k.CreatedAt, &last, &disabled, &revoked, &revokedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -1177,8 +1267,10 @@ func (s *Store) setSetting(key, value string) error {
 	return err
 }
 
+// Session tokens are stored hashed (SHA-256); the raw token lives only in the
+// client cookie. A DB/backup leak therefore can't be used to hijack sessions.
 func (s *Store) createSession(token, userID string, expiresAt time.Time) error {
-	_, err := s.db.Exec(`INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)`, token, userID, expiresAt)
+	_, err := s.db.Exec(`INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)`, sha256Hex(token), userID, expiresAt)
 	return err
 }
 
@@ -1187,18 +1279,18 @@ func (s *Store) sessionUser(token string, now time.Time) (*User, error) {
 	row := s.db.QueryRow(`
 		SELECT u.id, u.username, u.password_hash, u.role, u.created_at, u.last_login_at
 		FROM sessions s JOIN users u ON u.id = s.user_id
-		WHERE s.token = ? AND s.expires_at > ?`, token, now)
+		WHERE s.token = ? AND s.expires_at > ?`, sha256Hex(token), now)
 	return scanUser(row)
 }
 
 // touchSession slides a session's expiry forward (idle timeout: activity extends it).
 func (s *Store) touchSession(token string, expiresAt time.Time) error {
-	_, err := s.db.Exec(`UPDATE sessions SET expires_at = ? WHERE token = ?`, expiresAt, token)
+	_, err := s.db.Exec(`UPDATE sessions SET expires_at = ? WHERE token = ?`, expiresAt, sha256Hex(token))
 	return err
 }
 
 func (s *Store) deleteSession(token string) error {
-	_, err := s.db.Exec(`DELETE FROM sessions WHERE token = ?`, token)
+	_, err := s.db.Exec(`DELETE FROM sessions WHERE token = ?`, sha256Hex(token))
 	return err
 }
 

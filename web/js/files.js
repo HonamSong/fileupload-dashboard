@@ -140,12 +140,14 @@ function fillKeySelect(id, need) {
   const prev = sel.value;
   const keys = usableKeys(need);
   sel.innerHTML = keys.length
-    ? keys.map(k => `<option value="${k.id}">${esc(k.label)} · ${maskKey(k.key)}</option>`).join("")
+    ? keys.map(k => `<option value="${k.id}">${esc(k.label)} · ${esc(k.key_prefix || "")}…</option>`).join("")
     : `<option value="">사용 가능한 키 없음</option>`;
   if (prev && keys.some(k => k.id === prev)) sel.value = prev;
 }
-function realKeyOf(id) { const k = keysCache.find(x => x.id === $("#" + id).value); return k ? k.key : "<YOUR_API_KEY>"; }
-function maskedKeyOf(id) { const k = keysCache.find(x => x.id === $("#" + id).value); return k ? maskKey(k.key) : "<YOUR_API_KEY>"; }
+// 키 원문은 서버에 저장되지 않으므로(해시) 명령어에는 항상 플레이스홀더를 넣는다.
+// 발급 시 1회 표시된 키를 사용자가 직접 넣어야 한다.
+function realKeyOf(id) { return "<YOUR_API_KEY>"; }
+function maskedKeyOf(id) { return "<YOUR_API_KEY>"; }
 
 // Base URL for commands: admin-configured (설정>Server) or the current origin.
 function serverBase() {

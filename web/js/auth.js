@@ -64,7 +64,7 @@ function onActivity() {
 }
 async function onIdleTimeout() {
   stopIdleWatch();
-  try { await api("POST", "/api/logout"); } catch {}
+  try { await api("POST", "/api/logout", { reason: "timeout" }); } catch {}
   showLogin({ timedOut: true });
 }
 const IDLE_EVENTS = ["mousemove", "mousedown", "keydown", "scroll", "touchstart", "click"];
@@ -90,6 +90,6 @@ async function doLogin() {
 }
 async function doLogout() {
   if (typeof guardLeaveServer === "function" && !(await guardLeaveServer(false))) return;
-  try { await api("POST", "/api/logout"); } catch {}
+  try { await api("POST", "/api/logout", { reason: "manual" }); } catch {}
   showLogin();
 }

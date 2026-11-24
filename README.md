@@ -119,11 +119,12 @@ docker-compose up -d
 | DATA_DIR | /data | 데이터 디렉터리 |
 | PUBLIC_BASE_URL | http://localhost:8180 | curl 명령어 기본 주소(설정>Server에서 재정의 가능) |
 | ADMIN_USER | admin | 최초 owner 계정 아이디 |
-| ADMIN_PASSWORD | admin | 최초 owner 비밀번호(최초 1회만 반영) |
+| ADMIN_PASSWORD | (없음→랜덤) | 최초 owner 비밀번호(최초 1회만 반영). 비우면 랜덤 생성 후 기동 로그에 1회 출력 |
 | TRASH_TTL_DAYS | 10 | 휴지통 보관 일수 |
 | MAX_UPLOAD_MB | 1024 | 파일당 최대 업로드 크기 |
 | PREVIEW_LIMIT_KB | 1024 | 텍스트 미리보기 최대 바이트 |
 | IP_GUARD_DISABLE | (없음) | `1`이면 모든 IP 제한(UI·API·차단 목록) 해제 — 잠금 복구/최초 기동용 |
+| TRUSTED_PROXIES | (없음) | 신뢰 프록시 IP/CIDR(쉼표 구분). 이 목록의 peer에서 온 X-Forwarded-For/X-Real-IP 만 신뢰. 미설정 시 포워디드 헤더 무시(접속 IP 사용). 리버스 프록시·도커 뒤라면 프록시(또는 도커 브리지) 대역 지정 필요 |
 
 ---
 

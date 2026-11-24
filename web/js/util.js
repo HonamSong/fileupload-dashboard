@@ -82,4 +82,17 @@ async function api(method, url, body, isForm) {
 
 // ---- utils ----
 function esc(s) { return (s ?? "").toString().replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c])); }
-function escAttr(s) { return esc(s).replace(/'/g, "\\'"); }
+// escAttr: 값이 onclick="fn('...')" 처럼 "HTML 속성(쌍따옴표) 안의 JS 문자열(홑따옴표)"에
+// 들어갈 때 안전하도록 이스케이프한다. JS 문자열 깨짐은 백슬래시로, HTML 속성/엔티티 깨짐은
+// 엔티티로 막는다. (주의: ' 를 &#39; 로 바꾸면 브라우저가 속성 파싱 시 다시 ' 로 복원해
+// JS 문자열을 탈출할 수 있으므로 반드시 백슬래시로 이스케이프해야 한다.)
+function escAttr(s) {
+  return (s ?? "").toString()
+    .replace(/\\/g, "\\\\")   // JS: 백슬래시
+    .replace(/'/g, "\\'")     // JS: 홑따옴표 (문자열 탈출 방지)
+    .replace(/\r?\n/g, " ")   // 개행 제거
+    .replace(/&/g, "&amp;")   // HTML 엔티티 (먼저)
+    .replace(/"/g, "&quot;")  // HTML 속성(쌍따옴표) 탈출 방지
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}

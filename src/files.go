@@ -3,7 +3,6 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -25,8 +24,14 @@ import (
 // (subject to the configured retention limit) and replaced with the new content,
 // keeping the same file id/link. Returns the file and whether it was newly created.
 func (s *Server) storeUpload(part multipart.File, header *multipart.FileHeader, folderArg, uploader string) (*File, bool, error) {
-	name := filepath.Base(header.Filename)
+	name := strings.TrimSpace(filepath.Base(header.Filename))
+	if !validName(name) {
+		return nil, false, fmt.Errorf("잘못된 파일 이름입니다")
+	}
 	folder := normalizeFolder(folderArg)
+	if !validFolderPath(folder) {
+		return nil, false, fmt.Errorf("잘못된 폴더 경로입니다")
+	}
 	if !s.store.folderExists(folder) {
 		_ = s.store.createFolder(folder)
 	}
@@ -219,7 +224,7 @@ const (
 func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, s.cfg.MaxUpload)
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		httpError(w, http.StatusBadRequest, "invalid upload: %v", err)
+		httpError(w, http.StatusBadRequest, "업로드 형식이 올바르지 않습니다")
 		return
 	}
 	if !s.allowWrite(w, r, normalizeFolder(r.FormValue("folder"))) {
@@ -237,7 +242,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	f, created, err := s.storeUpload(part, header, r.FormValue("folder"), actor)
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, "upload failed: %v", err)
+		s.serverError(w, r, "upload", err)
 		return
 	}
 	log.Printf("upload: %q -> %s (user=%s, ip=%s)", f.Name, f.Folder, actor, clientIP(r))
@@ -317,7 +322,7 @@ func (s *Server) handleAPIUpload(w http.ResponseWriter, r *http.Request) {
 
 	r.Body = http.MaxBytesReader(w, r.Body, s.cfg.MaxUpload)
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		httpError(w, http.StatusBadRequest, "invalid upload: %v", err)
+		httpError(w, http.StatusBadRequest, "업로드 형식이 올바르지 않습니다")
 		return
 	}
 	part, header, err := r.FormFile("file")
@@ -339,7 +344,7 @@ func (s *Server) handleAPIUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	f, created, err := s.storeUpload(part, header, folder, owner)
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, "upload failed: %v", err)
+		s.serverError(w, r, "upload", err)
 		return
 	}
 	now := time.Now().UTC()
@@ -363,7 +368,7 @@ func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
 	}
 	files, err := s.store.listFilesInFolder(folder)
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, "db error: %v", err)
+		s.serverError(w, r, "db", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, s.fileViews(files))
@@ -374,7 +379,7 @@ func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleFolderCounts(w http.ResponseWriter, r *http.Request) {
 	counts, err := s.store.folderFileCounts()
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, "db error: %v", err)
+		s.serverError(w, r, "db", err)
 		return
 	}
 	// Only report counts for folders the user can read.
@@ -390,7 +395,7 @@ func (s *Server) handleFolderCounts(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListFolders(w http.ResponseWriter, r *http.Request) {
 	folders, err := s.store.listFolders()
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, "db error: %v", err)
+		s.serverError(w, r, "db", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, s.visibleFolders(s.currentUser(r), folders))
@@ -400,10 +405,10 @@ func (s *Server) handleCreateFolder(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Path string `json:"path"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	_ = decodeJSONBody(w, r, &body)
 	path := normalizeFolder(body.Path)
-	if path == "/" {
-		httpError(w, http.StatusBadRequest, "invalid folder name")
+	if path == "/" || !validFolderPath(path) {
+		httpError(w, http.StatusBadRequest, "잘못된 폴더 이름입니다 (/ \\ 제어문자 불가)")
 		return
 	}
 	// Need write access to the parent folder to create a subfolder.
@@ -417,7 +422,7 @@ func (s *Server) handleCreateFolder(w http.ResponseWriter, r *http.Request) {
 	// Create the folder and all of its ancestors.
 	for _, p := range ancestorFolders(path) {
 		if err := s.store.createFolder(p); err != nil {
-			httpError(w, http.StatusInternalServerError, "db error: %v", err)
+			s.serverError(w, r, "db", err)
 			return
 		}
 	}
@@ -437,7 +442,7 @@ func (s *Server) handleDeleteFolder(w http.ResponseWriter, r *http.Request) {
 	force := r.URL.Query().Get("force") == "true"
 	n, err := s.store.folderContentCount(path)
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, "db error: %v", err)
+		s.serverError(w, r, "db", err)
 		return
 	}
 	if n > 0 {
@@ -456,11 +461,11 @@ func (s *Server) handleDeleteFolder(w http.ResponseWriter, r *http.Request) {
 		by := u.Username
 		moved, err := s.store.trashFilesUnderFolder(path, time.Now().UTC(), by)
 		if err != nil {
-			httpError(w, http.StatusInternalServerError, "db error: %v", err)
+			s.serverError(w, r, "db", err)
 			return
 		}
 		if err := s.store.deleteFolderTree(path); err != nil {
-			httpError(w, http.StatusInternalServerError, "db error: %v", err)
+			s.serverError(w, r, "db", err)
 			return
 		}
 		s.audit(r, "folder_delete", path, fmt.Sprintf("하위 파일 %d개 휴지통 이동", moved))
@@ -478,17 +483,25 @@ func (s *Server) handleDeleteFolder(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListTrash(w http.ResponseWriter, r *http.Request) {
 	files, err := s.store.listFiles(true)
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, "db error: %v", err)
+		s.serverError(w, r, "db", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.fileViews(files))
+	// 휴지통도 폴더 ACL을 적용: 읽기 권한 있는 폴더의 파일만 노출.
+	u := s.currentUser(r)
+	visible := make([]*File, 0, len(files))
+	for _, f := range files {
+		if canRead(s.folderAccess(u, f.Folder)) {
+			visible = append(visible, f)
+		}
+	}
+	writeJSON(w, http.StatusOK, s.fileViews(visible))
 }
 
 // ---- preview ----
 
 func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request) {
 	f, err := s.store.getFile(r.PathValue("id"))
-	if err != nil {
+	if err != nil || f.DeletedAt != nil {
 		httpError(w, http.StatusNotFound, "file not found")
 		return
 	}
@@ -503,7 +516,14 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request) {
 	defer file.Close()
 
 	kind := previewKind(f.ContentType, f.Name)
+	// SVG는 same-origin 인라인 렌더 시 스크립트가 실행될 수 있어 이미지로 미리보지 않고
+	// 텍스트로 보여준다.
+	if kind == "image" && (strings.Contains(strings.ToLower(f.ContentType), "svg") ||
+		strings.HasSuffix(strings.ToLower(f.Name), ".svg")) {
+		kind = "text"
+	}
 	w.Header().Set("X-Preview-Kind", kind)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	switch kind {
 	case "text":
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -538,7 +558,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		s.purgeFileVersions(id)             // drop archived previous revisions
 		_ = s.store.deleteSharesForFile(id) // drop its public share links
 		if err := s.store.deleteFileRow(id); err != nil {
-			httpError(w, http.StatusInternalServerError, "db error: %v", err)
+			s.serverError(w, r, "db", err)
 			return
 		}
 		s.audit(r, "file_purge", strings.TrimRight(f.Folder, "/")+"/"+f.Name, "완전 삭제")
@@ -557,7 +577,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		by = u.Username
 	}
 	if err := s.store.softDeleteFile(id, now, by); err != nil {
-		httpError(w, http.StatusInternalServerError, "db error: %v", err)
+		s.serverError(w, r, "db", err)
 		return
 	}
 	purgeAt := now.Add(s.cfg.TrashTTL)
@@ -595,8 +615,12 @@ func (s *Server) handleMoveFile(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Folder string `json:"folder"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	_ = decodeJSONBody(w, r, &body)
 	folder := normalizeFolder(body.Folder)
+	if !validFolderPath(folder) {
+		httpError(w, http.StatusBadRequest, "잘못된 대상 폴더 경로입니다 (/ \\ 제어문자 불가)")
+		return
+	}
 
 	f, err := s.store.getFile(id)
 	if err != nil || f.DeletedAt != nil {
@@ -622,7 +646,7 @@ func (s *Server) handleMoveFile(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := s.store.moveFile(id, folder); err != nil {
-		httpError(w, http.StatusInternalServerError, "db error: %v", err)
+		s.serverError(w, r, "db", err)
 		return
 	}
 	s.audit(r, "file_move", f.Name, strings.TrimRight(f.Folder, "/")+"/ → "+strings.TrimRight(folder, "/")+"/")
@@ -635,7 +659,7 @@ func (s *Server) handleMoveFolder(w http.ResponseWriter, r *http.Request) {
 		Path   string `json:"path"`   // 이동할 폴더
 		Parent string `json:"parent"` // 옮겨 갈 상위 폴더
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	_ = decodeJSONBody(w, r, &body)
 	src := normalizeFolder(body.Path)
 	parent := normalizeFolder(body.Parent)
 	if src == "/" {
@@ -644,6 +668,10 @@ func (s *Server) handleMoveFolder(w http.ResponseWriter, r *http.Request) {
 	}
 	name := src[strings.LastIndex(src, "/")+1:]
 	dst := normalizeFolder(strings.TrimRight(parent, "/") + "/" + name)
+	if !validFolderPath(parent) || !validFolderPath(dst) {
+		httpError(w, http.StatusBadRequest, "잘못된 대상 폴더 경로입니다 (/ \\ 제어문자 불가)")
+		return
+	}
 	if dst == src {
 		writeJSON(w, http.StatusOK, map[string]any{"status": "unchanged", "path": src})
 		return
@@ -672,19 +700,40 @@ func (s *Server) handleMoveFolder(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := s.store.moveFolderTree(src, dst); err != nil {
-		httpError(w, http.StatusInternalServerError, "db error: %v", err)
+		s.serverError(w, r, "db", err)
 		return
 	}
 	s.audit(r, "folder_move", name, src+" → "+dst)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "moved", "path": dst})
 }
 
-// validName rejects empty / path-traversal / separator-containing names.
+// validFolderPath checks that every segment of a normalized folder path is a valid name.
+func validFolderPath(path string) bool {
+	if path == "/" {
+		return true
+	}
+	for _, seg := range strings.Split(strings.Trim(path, "/"), "/") {
+		if !validName(seg) {
+			return false
+		}
+	}
+	return true
+}
+
+// validName rejects empty / path-traversal / separator / control-char names.
 func validName(name string) bool {
 	if name == "" || name == "." || name == ".." || len(name) > 255 {
 		return false
 	}
-	return !strings.ContainsAny(name, "/\\")
+	if strings.ContainsAny(name, "/\\") {
+		return false
+	}
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f { // 제어문자 금지
+			return false
+		}
+	}
+	return true
 }
 
 // handleRenameFile changes a file's display name (same id/link, blob untouched).
@@ -693,7 +742,7 @@ func (s *Server) handleRenameFile(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Name string `json:"name"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	_ = decodeJSONBody(w, r, &body)
 	f, err := s.store.getFile(id)
 	if err != nil || f.DeletedAt != nil {
 		httpError(w, http.StatusNotFound, "file not found")
@@ -720,7 +769,7 @@ func (s *Server) handleRenameFile(w http.ResponseWriter, r *http.Request) {
 		ct = f.ContentType
 	}
 	if err := s.store.renameFile(id, name, ct); err != nil {
-		httpError(w, http.StatusInternalServerError, "db error: %v", err)
+		s.serverError(w, r, "db", err)
 		return
 	}
 	s.audit(r, "file_rename", strings.TrimRight(f.Folder, "/")+"/"+f.Name, "→ "+name)
@@ -733,7 +782,7 @@ func (s *Server) handleRenameFolder(w http.ResponseWriter, r *http.Request) {
 		Path string `json:"path"`
 		Name string `json:"name"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	_ = decodeJSONBody(w, r, &body)
 	src := normalizeFolder(body.Path)
 	if src == "/" {
 		httpError(w, http.StatusBadRequest, "루트 폴더는 이름을 변경할 수 없습니다")
@@ -765,7 +814,7 @@ func (s *Server) handleRenameFolder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.moveFolderTree(src, dst); err != nil {
-		httpError(w, http.StatusInternalServerError, "db error: %v", err)
+		s.serverError(w, r, "db", err)
 		return
 	}
 	s.audit(r, "folder_rename", src, "→ "+dst)

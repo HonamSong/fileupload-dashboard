@@ -2,7 +2,6 @@ package main
 
 import (
 	"archive/zip"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -210,15 +209,21 @@ func (s *Server) logSession(r *http.Request, action, fileID string) {
 	})
 }
 
+const maxZipFiles = 500 // zip 다운로드 1회 최대 파일 수(부하 공격 방지)
+
 // handleDownloadZip streams the given file ids as a single .zip (cookie-authed).
 // Used for multi-select downloads from the dashboard.
 func (s *Server) handleDownloadZip(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		IDs []string `json:"ids"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	_ = decodeJSONBody(w, r, &body)
 	if len(body.IDs) == 0 {
 		httpError(w, http.StatusBadRequest, "no files selected")
+		return
+	}
+	if len(body.IDs) > maxZipFiles {
+		httpError(w, http.StatusBadRequest, "한 번에 최대 %d개까지 압축 다운로드할 수 있습니다", maxZipFiles)
 		return
 	}
 	// Resolve valid, readable files up front so we can fail cleanly before the body.

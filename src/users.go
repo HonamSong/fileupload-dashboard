@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
@@ -30,7 +29,7 @@ func managerBlocked(actor *User, targetRole, newRole string) (int, string) {
 func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	users, err := s.store.listUsers()
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, "db error: %v", err)
+		s.serverError(w, r, "db", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, users)
@@ -42,14 +41,14 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		Password string `json:"password"`
 		Role     string `json:"role"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	_ = decodeJSONBody(w, r, &body)
 	username := strings.TrimSpace(body.Username)
 	if username == "" {
 		httpError(w, http.StatusBadRequest, "아이디를 입력하세요")
 		return
 	}
-	if len(body.Password) < 4 {
-		httpError(w, http.StatusBadRequest, "비밀번호는 4자 이상이어야 합니다")
+	if len(body.Password) < minPasswordLen {
+		httpError(w, http.StatusBadRequest, "비밀번호는 8자 이상이어야 합니다")
 		return
 	}
 	if !validRole(body.Role) {
@@ -57,11 +56,11 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if st, msg := managerBlocked(s.currentUser(r), "", body.Role); st != 0 {
-		httpError(w, st, msg)
+		httpError(w, st, "%s", msg)
 		return
 	}
 	if exists, err := s.store.usernameExists(username); err != nil {
-		httpError(w, http.StatusInternalServerError, "db error: %v", err)
+		s.serverError(w, r, "db", err)
 		return
 	} else if exists {
 		httpError(w, http.StatusConflict, "이미 존재하는 아이디입니다")
@@ -74,7 +73,7 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	u := &User{ID: newID(8), Username: username, PasswordHash: string(hash), Role: body.Role, CreatedAt: time.Now().UTC()}
 	if err := s.store.createUser(u); err != nil {
-		httpError(w, http.StatusInternalServerError, "db error: %v", err)
+		s.serverError(w, r, "db", err)
 		return
 	}
 	s.audit(r, "user_create", u.Username, "역할="+u.Role)
@@ -92,7 +91,7 @@ func (s *Server) handleSetUserRole(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Role string `json:"role"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	_ = decodeJSONBody(w, r, &body)
 	if !validRole(body.Role) {
 		httpError(w, http.StatusBadRequest, "역할을 선택하세요 (owner/admin/user/view)")
 		return
@@ -103,7 +102,7 @@ func (s *Server) handleSetUserRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if st, msg := managerBlocked(me, target.Role, body.Role); st != 0 {
-		httpError(w, st, msg)
+		httpError(w, st, "%s", msg)
 		return
 	}
 	// Do not allow demoting the last remaining owner.
@@ -114,7 +113,7 @@ func (s *Server) handleSetUserRole(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := s.store.updateUserRole(id, body.Role); err != nil {
-		httpError(w, http.StatusInternalServerError, "db error: %v", err)
+		s.serverError(w, r, "db", err)
 		return
 	}
 	s.audit(r, "user_role", target.Username, target.Role+" → "+body.Role)
@@ -130,15 +129,15 @@ func (s *Server) handleSetUserPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if st, msg := managerBlocked(s.currentUser(r), target.Role, ""); st != 0 {
-		httpError(w, st, msg)
+		httpError(w, st, "%s", msg)
 		return
 	}
 	var body struct {
 		New string `json:"new"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
-	if len(body.New) < 4 {
-		httpError(w, http.StatusBadRequest, "비밀번호는 4자 이상이어야 합니다")
+	_ = decodeJSONBody(w, r, &body)
+	if len(body.New) < minPasswordLen {
+		httpError(w, http.StatusBadRequest, "비밀번호는 8자 이상이어야 합니다")
 		return
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(body.New), bcrypt.DefaultCost)
@@ -147,7 +146,7 @@ func (s *Server) handleSetUserPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.updateUserPassword(id, string(hash)); err != nil {
-		httpError(w, http.StatusInternalServerError, "db error: %v", err)
+		s.serverError(w, r, "db", err)
 		return
 	}
 	_ = s.store.deleteSessionsForUser(id) // force the user to log in again
@@ -168,7 +167,7 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if st, msg := managerBlocked(me, target.Role, ""); st != 0 {
-		httpError(w, st, msg)
+		httpError(w, st, "%s", msg)
 		return
 	}
 	if target.Role == roleOwner {
@@ -178,7 +177,7 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := s.store.deleteUser(id); err != nil {
-		httpError(w, http.StatusInternalServerError, "db error: %v", err)
+		s.serverError(w, r, "db", err)
 		return
 	}
 	_ = s.store.deleteSessionsForUser(id)    // log the deleted user out everywhere

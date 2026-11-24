@@ -69,10 +69,8 @@ async function loadKeys() {
     const owner = k.is_service
       ? `<br><span class="muted key">🔧 서비스</span>`
       : (admin ? `<br><span class="muted key">👤 ${esc(k.owner || '-')}</span>` : '');
-    const keyCell = canManage
-      ? `<span class="muted">${maskKey(k.key)}</span>
-         <button class="btn ghost small" style="margin-left:8px" onclick="copyText('${esc(k.key)}')">복사</button>`
-      : `<span class="muted">••••••••</span>`;
+    // 키 원문은 저장하지 않으므로(해시) 목록에는 접두사만 표시한다(발급 시 1회만 전체 노출).
+    const keyCell = `<span class="muted key" title="발급 시에만 전체 키가 표시됩니다">${esc(k.key_prefix || "")}…</span>`;
     tr.innerHTML = `
       <td class="name">${esc(k.label)}${owner}</td>
       <td>${scopeLabel(k.scope)}</td>
@@ -88,20 +86,13 @@ async function loadKeys() {
   populateHcKeys();
 }
 
-// ---- 헬스체크 (UI에서 /healthz 를 선택한 키로 호출) ----
-function populateHcKeys() {
-  const sel = $("#hcKeySel"); if (!sel) return;
-  const cur = sel.value;
-  const active = (keysCache || []).filter(k => !k.revoked && !k.disabled && !(k.expires_at && new Date(k.expires_at) <= new Date()));
-  sel.innerHTML = active.length
-    ? active.map(k => `<option value="${escAttr(k.key)}">${esc(k.label)}${k.is_service ? " (서비스)" : ""} · ${maskKey(k.key)}</option>`).join("")
-    : `<option value="">사용 가능한 키 없음</option>`;
-  if (cur && active.some(k => k.key === cur)) sel.value = cur;
-}
+// ---- 헬스체크 (/healthz 를 붙여넣은 키로 호출) ----
+// 키 원문은 저장되지 않으므로 드롭다운 대신 사용자가 키를 직접 붙여넣는다.
+function populateHcKeys() { /* no-op: 키 원문 미저장 → 입력창 사용 */ }
 async function runHealthCheck() {
-  const key = $("#hcKeySel").value;
+  const key = ($("#hcKeyInput") ? $("#hcKeyInput").value : "").trim();
   const el = $("#hcResult");
-  if (!key) { el.textContent = "사용 가능한 키가 없습니다"; el.style.color = "var(--muted)"; return; }
+  if (!key) { el.textContent = "키를 붙여넣으세요"; el.style.color = "var(--muted)"; return; }
   el.textContent = "확인 중…"; el.style.color = "var(--muted)";
   try {
     const res = await fetch("/healthz", { headers: { "X-API-Key": key } });
@@ -116,7 +107,7 @@ async function runHealthCheck() {
   } catch (e) { el.textContent = "✕ 요청 실패: " + e.message; el.style.color = "var(--danger)"; }
 }
 function copyHealthCurl() {
-  const key = $("#hcKeySel").value || "<YOUR_API_KEY>";
+  const key = ($("#hcKeyInput") ? $("#hcKeyInput").value.trim() : "") || "<YOUR_API_KEY>";
   const base = (me.base_url || location.origin).replace(/\/$/, "");
   copyText(`curl -H "X-API-Key: ${key}" ${base}/healthz`);
 }
@@ -178,8 +169,12 @@ async function createKey() {
   try {
     const k = await api("POST", "/api/keys", { label, scope, is_service, user_id: owner.id, expires_in_minutes });
     $("#keyLabel").value = "";
-    toast(owner.id ? `키 생성됨 (${owner.name} 명의, 키: ${k.key})` : "키 생성됨 (키: " + k.key + ")");
     loadKeys();
+    // 키 원문은 지금 1회만 표시된다. 복사하기 쉽게 입력창에 담아 보여준다.
+    try { await navigator.clipboard.writeText(k.key); } catch {}
+    await promptDialog("새 API 키 (지금만 표시됨)",
+      `아래 키를 지금 복사해 두세요. 이후에는 다시 볼 수 없습니다${owner.id ? " (" + owner.name + " 명의)" : ""}. (클립보드에 복사됨)`,
+      { value: k.key });
   } catch (e) { toast("생성 실패: " + e.message); }
 }
 function copyText(t) { navigator.clipboard.writeText(t).then(() => toast("복사됨")); }

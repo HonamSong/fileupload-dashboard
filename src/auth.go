@@ -1,8 +1,8 @@
 package main
 
 import (
-	"encoding/json"
 	"log"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -15,6 +15,80 @@ import (
 
 const sessionCookie = "session"
 const sessionTTL = 7 * 24 * time.Hour // 쿠키 수명(브라우저 보관용). 실제 유휴 만료는 서버 세션 expires_at으로 관리.
+
+// dummyBcrypt is a valid hash used for constant-work comparison against unknown
+// usernames (timing-attack mitigation).
+var dummyBcrypt, _ = bcrypt.GenerateFromPassword([]byte("x-timing-mitigation-dummy"), bcrypt.DefaultCost)
+
+const minPasswordLen = 8
+
+const (
+	loginMaxFails = 10               // IP 또는 사용자명당 허용 실패 횟수
+	loginWindow   = 10 * time.Minute // 집계/잠금 시간창
+)
+
+// loginThrottled reports whether the IP or username has too many recent failures.
+func (s *Server) loginThrottled(ip, username string) bool {
+	s.failMu.Lock()
+	defer s.failMu.Unlock()
+	cutoff := time.Now().Add(-loginWindow)
+	count := func(key string) int {
+		n := 0
+		for _, t := range s.loginFails[key] {
+			if t.After(cutoff) {
+				n++
+			}
+		}
+		return n
+	}
+	return count("ip:"+ip) >= loginMaxFails || count("u:"+strings.ToLower(username)) >= loginMaxFails
+}
+
+// loginFailsMaxKeys bounds the failure map: once it grows past this, stale keys
+// (all entries aged out) are swept so attempts with many distinct usernames/IPs
+// can't leak memory.
+const loginFailsMaxKeys = 4096
+
+// recordLoginFail records a failed login against both the IP and the username.
+func (s *Server) recordLoginFail(ip, username string) {
+	now := time.Now()
+	cutoff := now.Add(-loginWindow)
+	s.failMu.Lock()
+	for _, key := range []string{"ip:" + ip, "u:" + strings.ToLower(username)} {
+		kept := s.loginFails[key][:0]
+		for _, t := range s.loginFails[key] {
+			if t.After(cutoff) {
+				kept = append(kept, t)
+			}
+		}
+		kept = append(kept, now)
+		s.loginFails[key] = kept
+	}
+	if len(s.loginFails) > loginFailsMaxKeys {
+		for k, times := range s.loginFails {
+			live := false
+			for _, t := range times {
+				if t.After(cutoff) {
+					live = true
+					break
+				}
+			}
+			if !live {
+				delete(s.loginFails, k)
+			}
+		}
+	}
+	s.failMu.Unlock()
+	s.recordKeyFailure(ip) // 자동 차단(켜져 있으면)과 연동
+}
+
+// clearLoginFails resets counters after a successful login.
+func (s *Server) clearLoginFails(ip, username string) {
+	s.failMu.Lock()
+	delete(s.loginFails, "ip:"+ip)
+	delete(s.loginFails, "u:"+strings.ToLower(username))
+	s.failMu.Unlock()
+}
 
 const (
 	defaultSessionTimeout = 600   // 초 (10분)
@@ -73,8 +147,15 @@ func (s *Server) seedAdminUser() {
 	username := env("ADMIN_USER", "admin")
 	// Reuse the legacy password hash if it exists; otherwise hash ADMIN_PASSWORD.
 	hash, _ := s.store.getSetting("password_hash")
+	generated := ""
 	if hash == "" {
-		h, err := bcrypt.GenerateFromPassword([]byte(env("ADMIN_PASSWORD", "admin")), bcrypt.DefaultCost)
+		pw := env("ADMIN_PASSWORD", "")
+		if pw == "" {
+			// 기본 admin/admin 대신 강한 랜덤 비밀번호를 생성해 로그에 1회만 출력.
+			pw = newID(12)
+			generated = pw
+		}
+		h, err := bcrypt.GenerateFromPassword([]byte(pw), bcrypt.DefaultCost)
 		if err != nil {
 			log.Fatalf("hash password: %v", err)
 		}
@@ -84,7 +165,11 @@ func (s *Server) seedAdminUser() {
 	if err := s.store.createUser(u); err != nil {
 		log.Fatalf("create owner user: %v", err)
 	}
-	log.Printf("owner user %q initialized (default password 'admin' unless ADMIN_PASSWORD set) — change it in 설정", username)
+	if generated != "" {
+		log.Printf("owner user %q initialized with a RANDOM password (ADMIN_PASSWORD not set): %s — 로그인 후 즉시 변경하세요", username, generated)
+	} else {
+		log.Printf("owner user %q initialized (ADMIN_PASSWORD 사용) — 로그인 후 비밀번호를 변경하세요", username)
+	}
 }
 
 // currentUser returns the logged-in user for the request, or nil.
@@ -168,33 +253,56 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
-	u, err := s.store.getUserByUsername(strings.TrimSpace(body.Username))
+	_ = decodeJSONBody(w, r, &body)
+	ip := clientIP(r)
+	username := strings.TrimSpace(body.Username)
+	// 무차별 대입 제한: IP 또는 사용자명 기준 실패가 임계값을 넘으면 일정 시간 차단.
+	if s.loginThrottled(ip, username) {
+		s.auditAs(username, r, "login_failed", "", "로그인 시도 제한(무차별 대입 차단)")
+		httpError(w, http.StatusTooManyRequests, "로그인 시도가 너무 많습니다. 잠시 후 다시 시도하세요")
+		return
+	}
+	u, err := s.store.getUserByUsername(username)
+	if err != nil {
+		// 존재하지 않는 사용자에도 더미 비교를 수행해 응답 시간으로 사용자명을
+		// 알아내는 타이밍 오라클을 방지한다.
+		_ = bcrypt.CompareHashAndPassword(dummyBcrypt, []byte(body.Password))
+	}
 	if err != nil || bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(body.Password)) != nil {
-		log.Printf("login failed user=%q (ip=%s)", body.Username, clientIP(r))
-		s.auditAs(strings.TrimSpace(body.Username), r, "login_failed", "", "아이디 또는 비밀번호 오류")
+		log.Printf("login failed user=%q (ip=%s)", username, ip)
+		s.recordLoginFail(ip, username)
+		s.auditAs(username, r, "login_failed", "", "아이디 또는 비밀번호 오류")
 		httpError(w, http.StatusUnauthorized, "아이디 또는 비밀번호가 올바르지 않습니다")
 		return
 	}
+	s.clearLoginFails(ip, username)
 	now := time.Now().UTC()
 	token := newID(24)
 	// DB session uses the idle-timeout window (slides on activity); the cookie is
 	// kept long-lived so the browser keeps sending it between activity.
 	if err := s.store.createSession(token, u.ID, now.Add(time.Duration(s.sessionTimeout())*time.Second)); err != nil {
-		httpError(w, http.StatusInternalServerError, "db error: %v", err)
+		s.serverError(w, r, "db", err)
 		return
 	}
 	_ = s.store.updateLastLogin(u.ID, now)
-	s.auditAs(u.Username, r, "login", "", "")
+	s.auditAs(u.Username, r, "login", "", shortUA(r.UserAgent()))
 	http.SetCookie(w, &http.Cookie{
 		Name: sessionCookie, Value: token, Path: "/",
-		HttpOnly: true, SameSite: http.SameSiteLaxMode, Expires: now.Add(sessionTTL),
+		HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: isHTTPS(r), Expires: now.Add(sessionTTL),
 	})
 	writeJSON(w, http.StatusOK, map[string]any{"authenticated": true, "username": u.Username, "role": u.Role, "base_url": s.baseURL(), "max_upload": s.cfg.MaxUpload, "session_timeout": s.sessionTimeout()})
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
-	s.audit(r, "logout", "", "") // resolve actor before the session is dropped
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	_ = decodeJSONBody(w, r, &body)
+	detail := "사용자 로그아웃"
+	if body.Reason == "timeout" {
+		detail = "세션 타임아웃(자동 로그아웃)"
+	}
+	s.audit(r, "logout", "", detail) // resolve actor before the session is dropped
 	if c, err := r.Cookie(sessionCookie); err == nil {
 		_ = s.store.deleteSession(c.Value)
 	}
@@ -230,7 +338,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		Current string `json:"current"`
 		New     string `json:"new"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	_ = decodeJSONBody(w, r, &body)
 	// 400 (not 401): the session is valid — a 401 here would make the UI
 	// treat it as an expired session and bounce to the login screen.
 	if body.Current == "" {
@@ -242,8 +350,8 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "현재 비밀번호가 올바르지 않습니다")
 		return
 	}
-	if len(body.New) < 4 {
-		httpError(w, http.StatusBadRequest, "새 비밀번호는 4자 이상이어야 합니다")
+	if len(body.New) < minPasswordLen {
+		httpError(w, http.StatusBadRequest, "새 비밀번호는 8자 이상이어야 합니다")
 		return
 	}
 	nh, err := bcrypt.GenerateFromPassword([]byte(body.New), bcrypt.DefaultCost)
@@ -252,9 +360,32 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.updateUserPassword(u.ID, string(nh)); err != nil {
-		httpError(w, http.StatusInternalServerError, "db error: %v", err)
+		s.serverError(w, r, "db", err)
 		return
 	}
-	s.audit(r, "password_change", u.Username, "본인 비밀번호 변경")
+	// 비밀번호 변경 시 다른 모든 세션을 무효화하고, 현재 세션만 새 토큰으로 유지.
+	_ = s.store.deleteSessionsForUser(u.ID)
+	now := time.Now().UTC()
+	token := newID(24)
+	if err := s.store.createSession(token, u.ID, now.Add(time.Duration(s.sessionTimeout())*time.Second)); err == nil {
+		http.SetCookie(w, &http.Cookie{
+			Name: sessionCookie, Value: token, Path: "/",
+			HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: isHTTPS(r), Expires: now.Add(sessionTTL),
+		})
+	}
+	s.audit(r, "password_change", u.Username, "본인 비밀번호 변경(다른 세션 로그아웃)")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "changed"})
+}
+
+// isHTTPS reports whether the request reached us over TLS (directly or via a
+// trusted proxy's X-Forwarded-Proto) — used to set the Secure cookie flag.
+func isHTTPS(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	// X-Forwarded-Proto는 신뢰 프록시에서 온 경우에만 신뢰.
+	if isTrustedProxy(net.ParseIP(remoteIP(r))) {
+		return strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+	}
+	return false
 }

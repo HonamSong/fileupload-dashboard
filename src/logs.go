@@ -2,11 +2,20 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// serverError logs the real error server-side and returns a generic 500 to the
+// client (never leaking DB/filesystem internals). The errorLogger middleware also
+// records the response in the Error Log.
+func (s *Server) serverError(w http.ResponseWriter, r *http.Request, source string, err error) {
+	log.Printf("error: %s %s [%s]: %v", r.Method, r.URL.Path, source, err)
+	httpError(w, http.StatusInternalServerError, "서버 오류가 발생했습니다")
+}
 
 func logLimit(r *http.Request, def int) int {
 	limit := def
@@ -25,7 +34,7 @@ func (s *Server) handleListLogs(w http.ResponseWriter, r *http.Request) {
 	to := parseLogTime(r.URL.Query().Get("to"), true)
 	logs, err := s.store.listLogs(logLimit(r, 200), from, to)
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, "db error: %v", err)
+		s.serverError(w, r, "db", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, logs)
@@ -55,7 +64,7 @@ func parseLogTime(v string, end bool) *time.Time {
 func (s *Server) handleListAudit(w http.ResponseWriter, r *http.Request) {
 	logs, err := s.store.listAudit(logLimit(r, 500))
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, "db error: %v", err)
+		s.serverError(w, r, "db", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, logs)
@@ -87,7 +96,7 @@ func (s *Server) auditAs(actor string, r *http.Request, action, target, detail s
 func (s *Server) handleListErrors(w http.ResponseWriter, r *http.Request) {
 	logs, err := s.store.listErrors(logLimit(r, 500))
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, "db error: %v", err)
+		s.serverError(w, r, "db", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, logs)

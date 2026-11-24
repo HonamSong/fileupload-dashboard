@@ -100,6 +100,12 @@ const AUDIT_ACTIONS = {
   user_role:      { label: "역할 변경",       group: "user",   color: "down" },
   user_password:  { label: "비밀번호 재설정", group: "user",   color: "warnp" },
   password_change:{ label: "비밀번호 변경",   group: "user",   color: "warnp" },
+  server_settings:{ label: "서버 설정 변경",   group: "server", color: "down" },
+  ip_block:       { label: "IP 차단",         group: "server", color: "denied" },
+  ip_unblock:     { label: "IP 차단 해제",     group: "server", color: "ok" },
+  guard_rearm:    { label: "IP 제한 재적용",   group: "server", color: "down" },
+  share_create:   { label: "공유 링크 생성",   group: "share",  color: "ok" },
+  share_delete:   { label: "공유 링크 삭제",   group: "share",  color: "denied" },
 };
 function auditInfo(a) { return AUDIT_ACTIONS[a] || { label: a || "-", group: "", color: "muted" }; }
 

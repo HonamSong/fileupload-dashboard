@@ -1,16 +1,42 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"html"
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// csrfGuard blocks cross-site state-changing requests to the cookie-authenticated
+// /api endpoints. Browsers send Sec-Fetch-Site; anything but same-origin/none is
+// rejected (covers sibling-subdomain "same-site"). Older browsers fall back to an
+// Origin host check. Non-/api public endpoints (API-key auth) are unaffected.
+func (s *Server) csrfGuard(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+			if strings.HasPrefix(r.URL.Path, "/api/") {
+				if sfs := r.Header.Get("Sec-Fetch-Site"); sfs != "" {
+					if sfs != "same-origin" && sfs != "none" {
+						httpError(w, http.StatusForbidden, "교차 사이트 요청이 차단되었습니다")
+						return
+					}
+				} else if origin := r.Header.Get("Origin"); origin != "" {
+					if u, err := url.Parse(origin); err != nil || u.Host != r.Host {
+						httpError(w, http.StatusForbidden, "교차 사이트 요청이 차단되었습니다")
+						return
+					}
+				}
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
 
 // ---- server settings: base URL + IP allow/block ----
 //
@@ -51,6 +77,7 @@ func (s *Server) handleGetServer(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleRearmGuard(w http.ResponseWriter, r *http.Request) {
 	s.guardReArm.Store(true)
 	log.Printf("IP guards re-armed at runtime (enforcement on)")
+	s.audit(r, "guard_rearm", "", "IP 제한 재적용")
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "guard_recovery": s.guardOff()})
 }
 
@@ -67,14 +94,19 @@ func (s *Server) handleSetServer(w http.ResponseWriter, r *http.Request) {
 		VersionLimit       *int   `json:"version_limit"`
 		SessionTimeout     *int   `json:"session_timeout"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	_ = decodeJSONBody(w, r, &body)
 	for _, list := range []string{body.IPAllow, body.IPBlock, body.UIAllow, body.UIBlock} {
 		if bad := invalidIPEntry(list); bad != "" {
 			httpError(w, http.StatusBadRequest, "잘못된 IP/CIDR: %s", bad)
 			return
 		}
 	}
-	_ = s.store.setSetting("base_url", strings.TrimRight(strings.TrimSpace(body.BaseURL), "/"))
+	baseURL := strings.TrimRight(strings.TrimSpace(body.BaseURL), "/")
+	if !validBaseURL(baseURL) {
+		httpError(w, http.StatusBadRequest, "공개 주소는 http(s)://호스트 형식이어야 합니다")
+		return
+	}
+	_ = s.store.setSetting("base_url", baseURL)
 	_ = s.store.setSetting("ip_allow", strings.TrimSpace(body.IPAllow))
 	_ = s.store.setSetting("ip_block", strings.TrimSpace(body.IPBlock))
 	_ = s.store.setSetting("ui_allow", strings.TrimSpace(body.UIAllow))
@@ -92,6 +124,7 @@ func (s *Server) handleSetServer(w http.ResponseWriter, r *http.Request) {
 	if body.SessionTimeout != nil { // 세션 유휴 타임아웃(초)
 		_ = s.store.setSetting("session_timeout", strconv.Itoa(clampInt(*body.SessionTimeout, minSessionTimeout, maxSessionTimeout, defaultSessionTimeout)))
 	}
+	s.audit(r, "server_settings", "", "서버 설정 변경")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -101,7 +134,7 @@ func (s *Server) handleBlockIP(w http.ResponseWriter, r *http.Request) {
 		IP     string `json:"ip"`
 		Reason string `json:"reason"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	_ = decodeJSONBody(w, r, &body)
 	ip := strings.TrimSpace(body.IP)
 	if net.ParseIP(ip) == nil {
 		httpError(w, http.StatusBadRequest, "invalid ip")
@@ -116,10 +149,11 @@ func (s *Server) handleBlockIP(w http.ResponseWriter, r *http.Request) {
 		by = u.Username
 	}
 	if err := s.store.addBlockedIP(ip, reason, by); err != nil {
-		httpError(w, http.StatusInternalServerError, "db error: %v", err)
+		s.serverError(w, r, "db", err)
 		return
 	}
 	log.Printf("manually blocked ip=%s by=%s", ip, by)
+	s.audit(r, "ip_block", ip, reason)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -128,7 +162,7 @@ func (s *Server) handleUnblockIP(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		IP string `json:"ip"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	_ = decodeJSONBody(w, r, &body)
 	ip := strings.TrimSpace(body.IP)
 	if ip == "" {
 		httpError(w, http.StatusBadRequest, "ip required")
@@ -138,6 +172,7 @@ func (s *Server) handleUnblockIP(w http.ResponseWriter, r *http.Request) {
 	s.failMu.Lock()
 	delete(s.keyFails, ip) // reset its counter too
 	s.failMu.Unlock()
+	s.audit(r, "ip_unblock", ip, "차단 해제")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -182,12 +217,32 @@ func (s *Server) recordKeyFailure(ip string) {
 		}
 	}
 	kept = append(kept, now)
-	s.keyFails[ip] = kept
 	if len(kept) >= threshold {
 		_ = s.store.addBlockedIP(ip, fmt.Sprintf("비정상 키 요청 %d회 (자동 차단)", len(kept)), "system")
 		delete(s.keyFails, ip)
 		log.Printf("auto-blocked ip=%s after %d bad key attempts", ip, len(kept))
+		return
 	}
+	if len(kept) == 0 {
+		delete(s.keyFails, ip) // 빈 버킷 정리(메모리 누수 방지)
+	} else {
+		s.keyFails[ip] = kept
+	}
+}
+
+// validBaseURL reports whether a user-supplied public base URL is acceptable:
+// empty (fall back to the configured default) or an absolute http(s) URL with a
+// host and no path/query/fragment. Server-side check — the UI validates too, but
+// that can be bypassed.
+func validBaseURL(s string) bool {
+	if s == "" {
+		return true
+	}
+	u, err := url.Parse(s)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return false
+	}
+	return u.Path == "" && u.RawQuery == "" && u.Fragment == ""
 }
 
 // securityHeaders sets defensive HTTP response headers on every response.
@@ -210,8 +265,10 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 		h.Set("Cross-Origin-Opener-Policy", "same-origin")
 		h.Set("Cross-Origin-Resource-Policy", "same-origin")
 		h.Set("X-Permitted-Cross-Domain-Policies", "none")
-		// HSTS only makes sense (and is only honored) over HTTPS.
-		if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+		// HSTS only makes sense over HTTPS. Trust X-Forwarded-Proto only from a
+		// trusted proxy (isHTTPS), so a client can't force the header via a spoofed
+		// header on a plain-HTTP deployment.
+		if isHTTPS(r) {
 			h.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 		}
 		next.ServeHTTP(w, r)

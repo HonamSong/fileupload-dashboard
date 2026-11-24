@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -30,7 +29,7 @@ func (s *Server) handleListKeys(w http.ResponseWriter, r *http.Request) {
 		keys, err = s.store.listKeysForUser(u.ID) // view: 본인 키만
 	}
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, "db error: %v", err)
+		s.serverError(w, r, "db", err)
 		return
 	}
 	mgr := isManager(u.Role)
@@ -61,7 +60,7 @@ func (s *Server) handleCreateKey(w http.ResponseWriter, r *http.Request) {
 		UserID           string `json:"user_id"`            // 대상 사용자(관리자만 지정 가능). 비우면 본인.
 		ExpiresInMinutes int    `json:"expires_in_minutes"` // 0 = 만료 없음(영구)
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	_ = decodeJSONBody(w, r, &body)
 
 	label := strings.TrimSpace(body.Label)
 	if !validKeyLabel(label) {
@@ -99,6 +98,12 @@ func (s *Server) handleCreateKey(w http.ResponseWriter, r *http.Request) {
 				httpError(w, http.StatusNotFound, "대상 사용자를 찾을 수 없습니다")
 				return
 			}
+			// 역할 위계를 지킨다: admin은 owner/admin 명의로 키를 발급할 수 없다
+			// (행위자 위장·상위 계정의 키 한도 소진 방지).
+			if st, msg := managerBlocked(u, target.Role, ""); st != 0 {
+				httpError(w, st, "%s", msg)
+				return
+			}
 			owner = target
 		}
 		ownerID, ownerName = owner.ID, owner.Username
@@ -107,15 +112,15 @@ func (s *Server) handleCreateKey(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if n, err := s.store.countActiveKeys(owner.ID, time.Now().UTC()); err != nil {
-			httpError(w, http.StatusInternalServerError, "db error: %v", err)
+			s.serverError(w, r, "db", err)
 			return
 		} else if n >= maxKeysPerUser {
-			httpError(w, http.StatusConflict, fmt.Sprintf("개인 키는 사용자당 최대 %d개까지 만들 수 있습니다", maxKeysPerUser))
+			httpError(w, http.StatusConflict, "개인 키는 사용자당 최대 %d개까지 만들 수 있습니다", maxKeysPerUser)
 			return
 		}
 	}
 	if exists, err := s.store.keyLabelExists(label, ownerID); err != nil {
-		httpError(w, http.StatusInternalServerError, "db error: %v", err)
+		s.serverError(w, r, "db", err)
 		return
 	} else if exists {
 		httpError(w, http.StatusConflict, "이미 같은 라벨의 키가 있습니다")
@@ -133,7 +138,7 @@ func (s *Server) handleCreateKey(w http.ResponseWriter, r *http.Request) {
 	}
 	key, err := s.store.createKey(label, ownerID, body.Scope, body.IsService, s.newSignedKey(), expiresAt)
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, "db error: %v", err)
+		s.serverError(w, r, "db", err)
 		return
 	}
 	kind := "개인"
@@ -163,9 +168,19 @@ func (s *Server) keyOwnedOrAdmin(w http.ResponseWriter, r *http.Request) *APIKey
 		}
 		return k
 	}
-	if !isManager(u.Role) && k.UserID != u.ID {
+	if k.UserID == u.ID {
+		return k // 본인 키
+	}
+	if !isManager(u.Role) {
 		httpError(w, http.StatusForbidden, "본인 키만 관리할 수 있습니다")
 		return nil
+	}
+	// 관리자가 남의 키를 관리할 때도 역할 위계를 지킨다(admin은 owner/admin 키 관리 불가).
+	if owner, err := s.store.getUser(k.UserID); err == nil {
+		if st, msg := managerBlocked(u, owner.Role, ""); st != 0 {
+			httpError(w, st, "%s", msg)
+			return nil
+		}
 	}
 	return k
 }

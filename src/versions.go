@@ -22,7 +22,7 @@ func (s *Server) handleListVersions(w http.ResponseWriter, r *http.Request) {
 	}
 	vers, err := s.store.listFileVersions(id)
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, "db error: %v", err)
+		s.serverError(w, r, "db", err)
 		return
 	}
 	if vers == nil {
@@ -47,7 +47,7 @@ func versionFilename(name string, no int) string {
 func (s *Server) handleDownloadVersion(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	f, err := s.store.getFile(id)
-	if err != nil {
+	if err != nil || f.DeletedAt != nil {
 		httpError(w, http.StatusNotFound, "file not found")
 		return
 	}

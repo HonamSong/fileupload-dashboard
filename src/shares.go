@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"html"
 	"log"
@@ -31,6 +30,15 @@ func fmtSize(n int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "KMGT"[exp])
+}
+
+// shareOwnedBy reports whether u created the share. Prefers the authoritative user
+// id; legacy rows without one fall back to the stored username.
+func shareOwnedBy(sh *Share, u *User) bool {
+	if sh.CreatedByID != "" {
+		return sh.CreatedByID == u.ID
+	}
+	return sh.CreatedBy == u.Username
 }
 
 // shareView adds the public URL, resolved file names, and hides the password hash.
@@ -73,7 +81,7 @@ func (s *Server) handleCreateShare(w http.ResponseWriter, r *http.Request) {
 		Hours        int      `json:"hours"`         // legacy fallback
 		MaxDownloads *int     `json:"max_downloads"` // nil→기본 1, 0→무제한, n→n회
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	_ = decodeJSONBody(w, r, &body)
 	if len(body.FileIDs) == 0 {
 		httpError(w, http.StatusBadRequest, "공유할 파일을 선택하세요")
 		return
@@ -128,14 +136,15 @@ func (s *Server) handleCreateShare(w http.ResponseWriter, r *http.Request) {
 	sh := &Share{
 		Token: newID(16), FileIDs: ids, PasswordHash: pwHash,
 		ExpiresAt: now.Add(time.Duration(mins) * time.Minute),
-		CreatedBy: u.Username, CreatedAt: now, MaxDownloads: maxDl,
+		CreatedBy: u.Username, CreatedByID: u.ID, CreatedAt: now, MaxDownloads: maxDl,
 	}
 	sh.HasPassword = pwHash != ""
 	if err := s.store.createShare(sh); err != nil {
-		httpError(w, http.StatusInternalServerError, "db error: %v", err)
+		s.serverError(w, r, "db", err)
 		return
 	}
-	log.Printf("share created: token=%s files=%d max=%d by=%s expires=%s", sh.Token, len(ids), maxDl, u.Username, sh.ExpiresAt.Format(time.RFC3339))
+	log.Printf("share created: files=%d max=%d by=%s expires=%s", len(ids), maxDl, u.Username, sh.ExpiresAt.Format(time.RFC3339))
+	s.audit(r, "share_create", fmt.Sprintf("파일 %d개", len(ids)), fmt.Sprintf("만료 %s, 최대 %d회", sh.ExpiresAt.Format("2006-01-02 15:04"), maxDl))
 	writeJSON(w, http.StatusCreated, s.shareView(sh))
 }
 
@@ -144,12 +153,12 @@ func (s *Server) handleListShares(w http.ResponseWriter, r *http.Request) {
 	u := s.currentUser(r)
 	all, err := s.store.listAllShares()
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, "db error: %v", err)
+		s.serverError(w, r, "db", err)
 		return
 	}
 	out := make([]map[string]any, 0, len(all))
 	for _, sh := range all {
-		if !isManager(u.Role) && sh.CreatedBy != u.Username {
+		if !isManager(u.Role) && !shareOwnedBy(sh, u) {
 			continue
 		}
 		out = append(out, s.shareView(sh))
@@ -166,11 +175,12 @@ func (s *Server) handleDeleteShare(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u := s.currentUser(r)
-	if !isManager(u.Role) && sh.CreatedBy != u.Username {
+	if !isManager(u.Role) && !shareOwnedBy(sh, u) {
 		httpError(w, http.StatusForbidden, "본인이 만든 공유만 삭제할 수 있습니다")
 		return
 	}
 	_ = s.store.deleteShare(token)
+	s.audit(r, "share_delete", fmt.Sprintf("파일 %d개", len(sh.FileIDs)), "공유 링크 삭제")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
@@ -209,11 +219,30 @@ func (s *Server) resolveShare(token string) (*Share, []*File, bool) {
 	if time.Now().After(sh.ExpiresAt) {
 		return nil, nil, false
 	}
+	// 생성자가 아직 존재하고, 각 파일의 폴더에 읽기 권한이 있는지 다운로드 시점에 재확인.
+	// (생성자 삭제·권한 회수·파일이 제한 폴더로 이동한 경우 링크 무효화)
+	// 생성자는 user id로 조회한다: 삭제된 사용자명을 재생성해도 옛 링크가 부활하지 않는다.
+	// (created_by_id가 없는 레거시 링크만 사용자명으로 폴백)
+	var creator *User
+	var cerr error
+	if sh.CreatedByID != "" {
+		creator, cerr = s.store.getUser(sh.CreatedByID)
+	} else {
+		creator, cerr = s.store.getUserByUsername(sh.CreatedBy)
+	}
+	if cerr != nil {
+		return nil, nil, false
+	}
 	var files []*File
 	for _, id := range sh.FileIDs {
-		if f, err := s.store.getFile(id); err == nil && f.DeletedAt == nil {
-			files = append(files, f)
+		f, err := s.store.getFile(id)
+		if err != nil || f.DeletedAt != nil {
+			continue
 		}
+		if !canRead(s.folderAccess(creator, f.Folder)) {
+			continue
+		}
+		files = append(files, f)
 	}
 	if len(files) == 0 {
 		return nil, nil, false
@@ -260,7 +289,7 @@ func (s *Server) handleShareDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	logOne := func(f *File) {
 		_ = s.store.addLog(&AccessLog{
-			Action: "download", Actor: "공유(" + sh.CreatedBy + ")", Detail: "share " + token,
+			Action: "download", Actor: "공유(" + sh.CreatedBy + ")", Detail: "공유 링크 다운로드",
 			FileID: f.ID, IP: clientIP(r), UserAgent: r.UserAgent(), AccessedAt: time.Now().UTC(),
 		})
 	}

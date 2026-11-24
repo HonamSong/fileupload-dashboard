@@ -35,9 +35,10 @@ type Server struct {
 	versionsDir string // archived previous revisions of re-uploaded files
 	keyHMAC     []byte // secret for signing/verifying API keys
 
-	failMu      sync.Mutex             // guards keyFails + sharePwFail
+	failMu      sync.Mutex             // guards keyFails + sharePwFail + loginFails
 	keyFails    map[string][]time.Time // per-IP recent bad-key attempts (auto-block)
 	sharePwFail map[string][]time.Time // per-token wrong share-password attempts (brute-force guard)
+	loginFails  map[string][]time.Time // per-IP / per-username recent failed logins (brute-force guard)
 	guardReArm  atomic.Bool            // runtime re-enable of IP guards despite IP_GUARD_DISABLE
 }
 
@@ -59,6 +60,7 @@ func main() {
 		IPGuardOff:    env("IP_GUARD_DISABLE", "") == "1" || env("IP_GUARD_DISABLE", "") == "true",
 	}
 
+	setTrustedProxies(env("TRUSTED_PROXIES", "")) // IP/CIDR 목록이 있을 때만 포워디드 헤더를 신뢰
 	filesDir := filepath.Join(cfg.DataDir, "files")
 	versionsDir := filepath.Join(cfg.DataDir, "versions")
 	for _, d := range []string{cfg.DataDir, filesDir, versionsDir} {
@@ -73,7 +75,7 @@ func main() {
 	}
 
 	srv := &Server{cfg: cfg, store: store, filesDir: filesDir, versionsDir: versionsDir,
-		keyFails: map[string][]time.Time{}, sharePwFail: map[string][]time.Time{}}
+		keyFails: map[string][]time.Time{}, sharePwFail: map[string][]time.Time{}, loginFails: map[string][]time.Time{}}
 	srv.initKeyHMAC()
 	srv.backfillChecksums()
 	srv.seedAdminUser()
@@ -153,11 +155,20 @@ func main() {
 	// Public upload endpoint (X-API-Key; key owner must be user/admin).
 	mux.HandleFunc("POST /u", gate(srv.handleAPIUpload))
 	// Public share links (no account): landing page + password-verified download.
-	mux.HandleFunc("GET /s/{token}", srv.handleSharePage)
-	mux.HandleFunc("POST /s/{token}", srv.handleShareDownload)
+	// ipGate 적용 → 차단된 IP는 공유 링크도 사용할 수 없음.
+	mux.HandleFunc("GET /s/{token}", gate(srv.handleSharePage))
+	mux.HandleFunc("POST /s/{token}", gate(srv.handleShareDownload))
 
 	log.Printf("listening on %s (data=%s, trashTTL=%s)", cfg.ListenAddr, cfg.DataDir, cfg.TrashTTL)
-	if err := http.ListenAndServe(cfg.ListenAddr, srv.securityHeaders(srv.uiGate(srv.errorLogger(mux)))); err != nil {
+	httpSrv := &http.Server{
+		Addr:    cfg.ListenAddr,
+		Handler: srv.securityHeaders(srv.uiGate(srv.errorLogger(srv.csrfGuard(mux)))),
+		// Slowloris 완화. WriteTimeout은 대용량 다운로드/업로드 스트리밍을 끊을 수 있어
+		// 설정하지 않고, 헤더 수신·유휴 연결 타임아웃만 둔다.
+		ReadHeaderTimeout: 15 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+	if err := httpSrv.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
 }

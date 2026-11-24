@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"net/http"
 )
 
@@ -105,7 +104,7 @@ func (s *Server) handleFolderAccess(w http.ResponseWriter, r *http.Request) {
 	u := s.currentUser(r)
 	all, err := s.store.listFolders()
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, "db error: %v", err)
+		s.serverError(w, r, "db", err)
 		return
 	}
 	out := map[string]string{}
@@ -121,12 +120,12 @@ func (s *Server) handleListFolderPerms(w http.ResponseWriter, r *http.Request) {
 	folder := normalizeFolder(r.URL.Query().Get("folder"))
 	grants, err := s.store.listFolderPermissions(folder)
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, "db error: %v", err)
+		s.serverError(w, r, "db", err)
 		return
 	}
 	users, err := s.store.listUsers()
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, "db error: %v", err)
+		s.serverError(w, r, "db", err)
 		return
 	}
 	type candidate struct {
@@ -151,7 +150,7 @@ func (s *Server) handleSetFolderPerm(w http.ResponseWriter, r *http.Request) {
 		UserID string `json:"user_id"`
 		Level  string `json:"level"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	_ = decodeJSONBody(w, r, &body)
 	// "" removes the grant (revert to role default); none/read/write are stored.
 	switch body.Level {
 	case "", "none", "read", "write":
@@ -174,7 +173,7 @@ func (s *Server) handleSetFolderPerm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.setFolderPermission(folder, body.UserID, body.Level); err != nil {
-		httpError(w, http.StatusInternalServerError, "db error: %v", err)
+		s.serverError(w, r, "db", err)
 		return
 	}
 	lvl := body.Level

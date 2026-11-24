@@ -187,12 +187,12 @@
     <div class="setting-title gap">헬스체크 (Health check)</div>
     <div class="curl" style="flex-wrap:wrap;align-items:center;gap:10px">
       <span class="muted" style="font-size:13px">키</span>
-      <select id="hcKeySel" class="txt scope-select"></select>
+      <input id="hcKeyInput" class="txt" type="password" placeholder="API 키 붙여넣기" style="min-width:240px" autocomplete="off">
       <button class="btn" onclick="runHealthCheck()">지금 확인</button>
       <button class="btn ghost small" onclick="copyHealthCurl()">curl 복사</button>
       <span id="hcResult" style="font-size:13px"></span>
     </div>
-    <p class="muted" style="margin-top:8px;font-size:12px"><code>GET /healthz</code> 는 <code>X-API-Key</code> 헤더에 유효한(활성) 키가 있을 때만 200으로 응답합니다. 키가 없거나 틀리면 404를 반환합니다. 모니터링 도구에서 200 여부로 상태를 판단하세요.</p>
+    <p class="muted" style="margin-top:8px;font-size:12px"><code>GET /healthz</code> 는 <code>X-API-Key</code> 헤더에 유효한(활성) 키가 있을 때만 200으로 응답합니다. 키가 없거나 틀리면 404를 반환합니다. 키 원문은 저장되지 않으므로 발급 시 복사한 키를 붙여넣어 확인하세요.</p>
   </section>
 </main>
 
@@ -258,9 +258,9 @@
           </div>
           <span style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-left:auto">
             <span class="muted" style="font-size:12px">기간</span>
-            <input id="logFrom" type="datetime-local" class="txt" title="시작" onchange="loadLogs()">
+            <input id="logFrom" type="datetime-local" class="txt dt" title="시작 (클릭하면 달력)" onchange="loadLogs()" onclick="this.showPicker && this.showPicker()" onfocus="this.showPicker && this.showPicker()">
             <span class="muted">~</span>
-            <input id="logTo" type="datetime-local" class="txt" title="끝" onchange="loadLogs()">
+            <input id="logTo" type="datetime-local" class="txt dt" title="끝 (클릭하면 달력)" onchange="loadLogs()" onclick="this.showPicker && this.showPicker()" onfocus="this.showPicker && this.showPicker()">
             <button class="btn ghost small" onclick="setLogRange(1)">오늘</button>
             <button class="btn ghost small" onclick="setLogRange(7)">7일</button>
             <button class="btn ghost small" onclick="clearLogRange()">전체</button>
@@ -339,6 +339,8 @@
               <option value="folder">폴더</option>
               <option value="key">API 키</option>
               <option value="user">사용자</option>
+              <option value="server">서버/IP</option>
+              <option value="share">공유</option>
             </select>
             <input id="auditSearch" class="txt" placeholder="검색 (동작·대상·사용자·IP)" oninput="filterAudit()" style="flex:1;min-width:180px;max-width:320px">
             <select id="auditLimitSel" class="txt" title="불러올 개수" onchange="loadAuditLogs()">
