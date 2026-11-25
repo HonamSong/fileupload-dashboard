@@ -78,6 +78,9 @@ func (s *Server) purgeOnce() {
 
 	// Drop expired login sessions and expired share links.
 	_ = s.store.deleteExpiredSessions(time.Now().UTC())
+	if n, err := s.store.purgeExpiredBlocks(time.Now().UTC()); err == nil && n > 0 {
+		log.Printf("purge: removed %d expired auto-block(s)", n)
+	}
 	if n, err := s.store.deleteExpiredShares(time.Now().UTC()); err == nil && n > 0 {
 		log.Printf("purge: removed %d expired share link(s)", n)
 	}

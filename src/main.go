@@ -35,10 +35,11 @@ type Server struct {
 	versionsDir string // archived previous revisions of re-uploaded files
 	keyHMAC     []byte // secret for signing/verifying API keys
 
-	failMu      sync.Mutex             // guards keyFails + sharePwFail + loginFails
+	failMu      sync.Mutex             // guards keyFails + sharePwFail + loginFails + pathProbes
 	keyFails    map[string][]time.Time // per-IP recent bad-key attempts (auto-block)
 	sharePwFail map[string][]time.Time // per-token wrong share-password attempts (brute-force guard)
 	loginFails  map[string][]time.Time // per-IP / per-username recent failed logins (brute-force guard)
+	pathProbes  map[string][]time.Time // per-IP recent 404(unknown-path) hits (scanner auto-block)
 	guardReArm  atomic.Bool            // runtime re-enable of IP guards despite IP_GUARD_DISABLE
 }
 
@@ -75,7 +76,8 @@ func main() {
 	}
 
 	srv := &Server{cfg: cfg, store: store, filesDir: filesDir, versionsDir: versionsDir,
-		keyFails: map[string][]time.Time{}, sharePwFail: map[string][]time.Time{}, loginFails: map[string][]time.Time{}}
+		keyFails: map[string][]time.Time{}, sharePwFail: map[string][]time.Time{}, loginFails: map[string][]time.Time{},
+		pathProbes: map[string][]time.Time{}}
 	srv.initKeyHMAC()
 	srv.backfillChecksums()
 	srv.seedAdminUser()

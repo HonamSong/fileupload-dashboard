@@ -161,6 +161,10 @@ func (s *Server) errorLogger(next http.Handler) http.Handler {
 					IP:      clientIP(r), CreatedAt: time.Now().UTC(),
 				})
 			}
+			// 존재하지 않는 경로(404) 반복 요청 = 스캐너 탐지 → 자동 차단(켜져 있을 때).
+			if cw.status == http.StatusNotFound {
+				s.maybeRecordProbe(r)
+			}
 		}()
 		next.ServeHTTP(cw, r)
 	})

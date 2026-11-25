@@ -466,8 +466,21 @@
         <input id="srvAbWindow" type="number" min="1" max="1440" class="txt" style="width:80px" oninput="onServerInput()">
         <span class="muted" style="font-size:13px">분 이내</span>
       </div>
-      <p class="muted" style="font-size:12px;margin:6px 0 0">해당 IP가 지정한 시간 안에 임계값 이상 잘못된 키로 시도하면 자동으로 차단 목록에 추가됩니다.</p>
-      <div id="srvBlockedWrap" style="margin-top:10px"></div>
+      <p class="muted" style="font-size:12px;margin:6px 0 0">해당 IP가 지정한 시간 안에 임계값 이상 잘못된 키로 시도하면 자동으로 차단 목록에 추가됩니다. (시간 창은 아래 경로 스캔 차단과 공유)</p>
+
+      <div class="setting-title" style="margin-top:18px">자동 차단 (없는 경로 스캔 시)</div>
+      <div class="curl" style="flex-wrap:wrap;align-items:center;gap:12px">
+        <label style="display:inline-flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="srvAutoBlock404" onchange="onServerInput()" style="width:16px;height:16px;accent-color:var(--accent)">
+          <span>자동 차단 사용</span>
+        </label>
+        <span class="muted" style="font-size:13px">임계값</span>
+        <input id="srvAb404Threshold" type="number" min="1" max="1000" class="txt" style="width:80px" oninput="onServerInput()">
+        <span class="muted" style="font-size:13px">회 / 위 시간 창 이내</span>
+      </div>
+      <p class="muted" style="font-size:12px;margin:6px 0 0">존재하지 않는 경로(예: /admin, /.env 등)로 로그인하지 않은 IP가 임계값 이상 요청하면 스캐너로 보고 자동 차단합니다. 대시보드 루트·정적 자원·다운로드/공유 엔드포인트는 집계에서 제외됩니다. 기본 임계값 2회.</p>
+
+      <div id="srvBlockedWrap" style="margin-top:14px"></div>
       </div>
 
       <div style="margin-top:16px;display:flex;justify-content:space-between;align-items:center;gap:12px">

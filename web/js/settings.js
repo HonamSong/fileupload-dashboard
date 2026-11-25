@@ -150,6 +150,8 @@ function currentServerVals() {
     auto_block: $("#srvAutoBlock").checked ? "on" : "off",
     ab_threshold: $("#srvAbThreshold").value,
     ab_window: $("#srvAbWindow").value,
+    auto_block_404: $("#srvAutoBlock404").checked ? "on" : "off",
+    ab404_threshold: $("#srvAb404Threshold").value,
     version_limit: $("#srvVersionLimit").value,
     session_timeout: $("#srvSessionTimeout").value,
   };
@@ -182,6 +184,8 @@ async function loadServer() {
     $("#srvAutoBlock").checked = s.auto_block === "on";
     $("#srvAbThreshold").value = s.auto_block_threshold || 10;
     $("#srvAbWindow").value = s.auto_block_window || 10;
+    $("#srvAutoBlock404").checked = s.auto_block_404 === "on";
+    $("#srvAb404Threshold").value = s.auto_block_404_threshold || 2;
     $("#srvVersionLimit").value = (s.version_limit != null ? s.version_limit : 10);
     $("#srvSessionTimeout").value = (s.session_timeout != null ? s.session_timeout : 600);
     renderBlockedIPs(s.blocked_ips || []);
@@ -211,7 +215,7 @@ function renderBlockedIPs(list) {
   el.innerHTML = head + ` — ${list.length}건</div>` +
     list.map(b => `
       <div class="fp-row">
-        <span><span class="key">${esc(b.ip)}</span> <span class="muted">${esc(b.reason || "")} · 차단자 ${esc(b.blocked_by || "-")} · ${fmtTime(b.blocked_at)}</span></span>
+        <span><span class="key">${esc(b.ip)}</span> <span class="muted">${esc(b.reason || "")} · 차단자 ${esc(b.blocked_by || "-")} · ${fmtTime(b.blocked_at)}${b.expires_at ? " · " + fmtTime(b.expires_at) + " 자동 해제" : " · 영구"}</span></span>
         <button class="btn ghost small" onclick="unblockIP('${escAttr(b.ip)}')">차단 해제</button>
       </div>`).join("");
 }
@@ -257,6 +261,8 @@ async function saveServer() {
       auto_block: $("#srvAutoBlock").checked ? "on" : "off",
       auto_block_threshold: +$("#srvAbThreshold").value || 10,
       auto_block_window: +$("#srvAbWindow").value || 10,
+      auto_block_404: $("#srvAutoBlock404").checked ? "on" : "off",
+      auto_block_404_threshold: +$("#srvAb404Threshold").value || 2,
       version_limit: Math.max(0, Math.min(100, +$("#srvVersionLimit").value || 0)),
       session_timeout: Math.max(60, Math.min(86400, +$("#srvSessionTimeout").value || 600)),
     });

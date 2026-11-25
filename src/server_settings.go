@@ -55,20 +55,26 @@ func (s *Server) handleGetServer(w http.ResponseWriter, r *http.Request) {
 	if autoBlock != "on" {
 		autoBlock = "off"
 	}
+	autoBlock404, _ := s.store.getSetting("auto_block_404")
+	if autoBlock404 != "on" {
+		autoBlock404 = "off"
+	}
 	blocked, _ := s.store.listBlockedIPs()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"base_url": base, "ip_allow": allow, "ip_block": block,
 		"ui_allow": uiAllow, "ui_block": uiBlock,
-		"env_base_url":         strings.TrimRight(s.cfg.PublicBaseURL, "/"),
-		"auto_block":           autoBlock,
-		"auto_block_threshold": s.settingInt("auto_block_threshold", 10),
-		"auto_block_window":    s.settingInt("auto_block_window", 10),
-		"version_limit":        s.versionLimit(),
-		"version_limit_max":    maxVersionLimit,
-		"session_timeout":      s.sessionTimeout(),
-		"blocked_ips":          blocked,
-		"guard_recovery":       s.guardOff(),     // true = all IP limits currently bypassed
-		"guard_env":            s.cfg.IPGuardOff, // IP_GUARD_DISABLE is set on the container
+		"env_base_url":             strings.TrimRight(s.cfg.PublicBaseURL, "/"),
+		"auto_block":               autoBlock,
+		"auto_block_threshold":     s.settingInt("auto_block_threshold", 10),
+		"auto_block_window":        s.settingInt("auto_block_window", 10),
+		"auto_block_404":           autoBlock404,
+		"auto_block_404_threshold": s.settingInt("auto_block_404_threshold", 2),
+		"version_limit":            s.versionLimit(),
+		"version_limit_max":        maxVersionLimit,
+		"session_timeout":          s.sessionTimeout(),
+		"blocked_ips":              blocked,
+		"guard_recovery":           s.guardOff(),     // true = all IP limits currently bypassed
+		"guard_env":                s.cfg.IPGuardOff, // IP_GUARD_DISABLE is set on the container
 	})
 }
 
@@ -83,16 +89,18 @@ func (s *Server) handleRearmGuard(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSetServer(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		BaseURL            string `json:"base_url"`
-		IPAllow            string `json:"ip_allow"`
-		IPBlock            string `json:"ip_block"`
-		UIAllow            string `json:"ui_allow"`
-		UIBlock            string `json:"ui_block"`
-		AutoBlock          string `json:"auto_block"`
-		AutoBlockThreshold int    `json:"auto_block_threshold"`
-		AutoBlockWindow    int    `json:"auto_block_window"`
-		VersionLimit       *int   `json:"version_limit"`
-		SessionTimeout     *int   `json:"session_timeout"`
+		BaseURL               string `json:"base_url"`
+		IPAllow               string `json:"ip_allow"`
+		IPBlock               string `json:"ip_block"`
+		UIAllow               string `json:"ui_allow"`
+		UIBlock               string `json:"ui_block"`
+		AutoBlock             string `json:"auto_block"`
+		AutoBlockThreshold    int    `json:"auto_block_threshold"`
+		AutoBlockWindow       int    `json:"auto_block_window"`
+		AutoBlock404          string `json:"auto_block_404"`
+		AutoBlock404Threshold int    `json:"auto_block_404_threshold"`
+		VersionLimit          *int   `json:"version_limit"`
+		SessionTimeout        *int   `json:"session_timeout"`
 	}
 	_ = decodeJSONBody(w, r, &body)
 	for _, list := range []string{body.IPAllow, body.IPBlock, body.UIAllow, body.UIBlock} {
@@ -118,6 +126,12 @@ func (s *Server) handleSetServer(w http.ResponseWriter, r *http.Request) {
 	_ = s.store.setSetting("auto_block", autoBlock)
 	_ = s.store.setSetting("auto_block_threshold", strconv.Itoa(clampInt(body.AutoBlockThreshold, 1, 1000, 10)))
 	_ = s.store.setSetting("auto_block_window", strconv.Itoa(clampInt(body.AutoBlockWindow, 1, 1440, 10)))
+	autoBlock404 := "off"
+	if body.AutoBlock404 == "on" {
+		autoBlock404 = "on"
+	}
+	_ = s.store.setSetting("auto_block_404", autoBlock404)
+	_ = s.store.setSetting("auto_block_404_threshold", strconv.Itoa(clampInt(body.AutoBlock404Threshold, 1, 1000, 2)))
 	if body.VersionLimit != nil { // 파일 버전 보관 개수 (0=버전 관리 안 함)
 		_ = s.store.setSetting("version_limit", strconv.Itoa(clampInt(*body.VersionLimit, 0, maxVersionLimit, defaultVersionLimit)))
 	}
@@ -170,7 +184,8 @@ func (s *Server) handleUnblockIP(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.store.removeBlockedIP(ip)
 	s.failMu.Lock()
-	delete(s.keyFails, ip) // reset its counter too
+	delete(s.keyFails, ip)   // reset its counters too
+	delete(s.pathProbes, ip) // (bad-key + unknown-path)
 	s.failMu.Unlock()
 	s.audit(r, "ip_unblock", ip, "차단 해제")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -198,11 +213,34 @@ func (s *Server) settingInt(key string, def int) int {
 	return def
 }
 
+// autoBlockTTL is how long a *system* auto-block lasts before it self-expires.
+// A false positive (e.g. an unusual but benign client) clears itself after this,
+// while manual blocks stay permanent. Operators can still unblock sooner.
+const autoBlockTTL = 24 * time.Hour
+
+// autoBlockExempt reports whether an IP must never be auto-blocked: loopback
+// (internal health checks / same-host probes) or an IP explicitly listed in an
+// allow list. This stops a trusted/administrator IP from being locked out by a
+// false positive or a spoofed X-Forwarded-For.
+func (s *Server) autoBlockExempt(ip string) bool {
+	if p := net.ParseIP(ip); p != nil && p.IsLoopback() {
+		return true
+	}
+	if allow, _ := s.store.getSetting("ip_allow"); ipInList(ip, allow) {
+		return true
+	}
+	uiAllow, _ := s.store.getSetting("ui_allow")
+	return ipInList(ip, uiAllow)
+}
+
 // recordKeyFailure notes a bad-key attempt from ip and auto-blocks the IP once
 // it exceeds the configured threshold within the window (when auto_block is on).
 func (s *Server) recordKeyFailure(ip string) {
 	if v, _ := s.store.getSetting("auto_block"); v != "on" {
 		return
+	}
+	if s.autoBlockExempt(ip) {
+		return // 허용목록·루프백 IP는 자동 차단하지 않음
 	}
 	threshold := s.settingInt("auto_block_threshold", 10)
 	window := time.Duration(s.settingInt("auto_block_window", 10)) * time.Minute
@@ -218,7 +256,8 @@ func (s *Server) recordKeyFailure(ip string) {
 	}
 	kept = append(kept, now)
 	if len(kept) >= threshold {
-		_ = s.store.addBlockedIP(ip, fmt.Sprintf("비정상 키 요청 %d회 (자동 차단)", len(kept)), "system")
+		until := time.Now().UTC().Add(autoBlockTTL)
+		_ = s.store.addBlockedIPUntil(ip, fmt.Sprintf("비정상 키 요청 %d회 (자동 차단)", len(kept)), "system", &until)
 		delete(s.keyFails, ip)
 		log.Printf("auto-blocked ip=%s after %d bad key attempts", ip, len(kept))
 		return
@@ -227,6 +266,102 @@ func (s *Server) recordKeyFailure(ip string) {
 		delete(s.keyFails, ip) // 빈 버킷 정리(메모리 누수 방지)
 	} else {
 		s.keyFails[ip] = kept
+	}
+}
+
+// probeSkipPrefixes: 404 를 내더라도 자동 차단 카운트에서 제외할 경로.
+//   - /d /f /u /s /healthz: API 키·공유 엔드포인트. 잘못된 키는 recordKeyFailure 가 따로 집계.
+//   - /js /css: 정적 자원 누락(배포 버그)으로 방문자를 차단하지 않도록 제외.
+var probeSkipPrefixes = []string{"/d/", "/f/", "/s/", "/js/", "/css/"}
+
+// isUnknownProbePath reports whether a 404 on this path should count as a
+// scanner probe. The dashboard root, the public/API-key endpoints, and paths
+// browsers/crawlers fetch automatically are exempt.
+func isUnknownProbePath(p string) bool {
+	if p == "/" || p == "/u" || p == "/healthz" {
+		return false
+	}
+	for _, pre := range probeSkipPrefixes {
+		if strings.HasPrefix(p, pre) {
+			return false
+		}
+	}
+	if isBenignWellKnown(p) {
+		return false
+	}
+	return true
+}
+
+// isBenignWellKnown matches paths that browsers, crawlers and link previewers
+// request on their own (favicon, touch icons, robots, sitemap, /.well-known/…).
+// A normal first visit 404s on these, so counting them would block real users.
+func isBenignWellKnown(p string) bool {
+	switch p {
+	case "/robots.txt", "/sitemap.xml", "/manifest.json", "/site.webmanifest",
+		"/browserconfig.xml", "/opensearch.xml", "/ads.txt", "/humans.txt":
+		return true
+	}
+	if strings.HasPrefix(p, "/.well-known/") {
+		return true
+	}
+	// favicon.ico, favicon-32x32.png, apple-touch-icon[-NxN][-precomposed].png
+	return strings.HasPrefix(p, "/favicon") || strings.HasPrefix(p, "/apple-touch-icon")
+}
+
+// maybeRecordProbe is called for every 404. It auto-blocks the client IP when
+// auto_block_404 is on and the request is an unauthenticated hit on a path that
+// does not exist (a scanner sweeping for admin panels, .env, etc.).
+func (s *Server) maybeRecordProbe(r *http.Request) {
+	if v, _ := s.store.getSetting("auto_block_404"); v != "on" {
+		return
+	}
+	if !isUnknownProbePath(r.URL.Path) {
+		return
+	}
+	if s.currentUser(r) != nil {
+		return // 로그인 사용자는 제외(오타/잘못된 북마크로 자기 자신이 잠기지 않도록)
+	}
+	s.recordPathProbe(clientIP(r))
+}
+
+// probeMaxKeys bounds the pathProbes map so a distributed scan can't grow it
+// without limit before any single IP reaches the threshold.
+const probeMaxKeys = 4096
+
+// recordPathProbe notes an unknown-path (404) hit from ip and auto-blocks the IP
+// once it exceeds auto_block_404_threshold within the (shared) auto_block_window.
+func (s *Server) recordPathProbe(ip string) {
+	if s.autoBlockExempt(ip) {
+		return // 허용목록·루프백 IP는 자동 차단하지 않음
+	}
+	threshold := s.settingInt("auto_block_404_threshold", 2)
+	window := time.Duration(s.settingInt("auto_block_window", 10)) * time.Minute
+	now := time.Now()
+	cutoff := now.Add(-window)
+	s.failMu.Lock()
+	defer s.failMu.Unlock()
+	kept := s.pathProbes[ip][:0]
+	for _, t := range s.pathProbes[ip] {
+		if t.After(cutoff) {
+			kept = append(kept, t)
+		}
+	}
+	kept = append(kept, now)
+	if len(kept) >= threshold {
+		until := time.Now().UTC().Add(autoBlockTTL)
+		_ = s.store.addBlockedIPUntil(ip, fmt.Sprintf("존재하지 않는 경로 %d회 요청 (자동 차단)", len(kept)), "system", &until)
+		delete(s.pathProbes, ip)
+		log.Printf("auto-blocked ip=%s after %d unknown-path probes", ip, len(kept))
+		return
+	}
+	s.pathProbes[ip] = kept
+	// 분산 스캔으로 맵이 과도하게 커지면 window 지난 항목을 정리.
+	if len(s.pathProbes) > probeMaxKeys {
+		for k, times := range s.pathProbes {
+			if len(times) == 0 || !times[len(times)-1].After(cutoff) {
+				delete(s.pathProbes, k)
+			}
+		}
 	}
 }
 

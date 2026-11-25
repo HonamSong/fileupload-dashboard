@@ -306,6 +306,11 @@ CREATE TABLE IF NOT EXISTS users (
 	if err := s.ensureColumn("blocked_ips", "blocked_by", `ALTER TABLE blocked_ips ADD COLUMN blocked_by TEXT NOT NULL DEFAULT ''`); err != nil {
 		return err
 	}
+	// Optional auto-expiry (NULL = permanent). System auto-blocks set a TTL so a
+	// false positive unblocks itself; manual blocks stay permanent (NULL).
+	if err := s.ensureColumn("blocked_ips", "expires_at", `ALTER TABLE blocked_ips ADD COLUMN expires_at TIMESTAMP`); err != nil {
+		return err
+	}
 	// shares can hold multiple files (comma-separated ids) for zip downloads.
 	if err := s.ensureColumn("shares", "file_ids", `ALTER TABLE shares ADD COLUMN file_ids TEXT NOT NULL DEFAULT ''`); err != nil {
 		return err
@@ -861,17 +866,25 @@ func (s *Store) deletePermissionsForUser(userID string) error {
 // ---- auto-blocked IPs (brute-force protection) ----
 
 type BlockedIP struct {
-	IP        string    `json:"ip"`
-	BlockedAt time.Time `json:"blocked_at"`
-	Reason    string    `json:"reason"`
-	BlockedBy string    `json:"blocked_by"` // 차단 실행자 (username 또는 "system")
+	IP        string     `json:"ip"`
+	BlockedAt time.Time  `json:"blocked_at"`
+	Reason    string     `json:"reason"`
+	BlockedBy string     `json:"blocked_by"`           // 차단 실행자 (username 또는 "system")
+	ExpiresAt *time.Time `json:"expires_at,omitempty"` // nil = 영구(수동 차단)
 }
 
+// addBlockedIP permanently blocks an IP (manual block).
 func (s *Store) addBlockedIP(ip, reason, by string) error {
+	return s.addBlockedIPUntil(ip, reason, by, nil)
+}
+
+// addBlockedIPUntil blocks an IP until `until` (nil = permanent). System
+// auto-blocks pass a TTL so a false positive clears itself.
+func (s *Store) addBlockedIPUntil(ip, reason, by string, until *time.Time) error {
 	_, err := s.db.Exec(
-		`INSERT INTO blocked_ips (ip, blocked_at, reason, blocked_by) VALUES (?, ?, ?, ?)
-		 ON CONFLICT(ip) DO UPDATE SET blocked_at = excluded.blocked_at, reason = excluded.reason, blocked_by = excluded.blocked_by`,
-		ip, time.Now().UTC(), reason, by)
+		`INSERT INTO blocked_ips (ip, blocked_at, reason, blocked_by, expires_at) VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(ip) DO UPDATE SET blocked_at = excluded.blocked_at, reason = excluded.reason, blocked_by = excluded.blocked_by, expires_at = excluded.expires_at`,
+		ip, time.Now().UTC(), reason, by, until)
 	return err
 }
 
@@ -882,8 +895,20 @@ func (s *Store) removeBlockedIP(ip string) error {
 
 func (s *Store) isBlockedIP(ip string) bool {
 	var n int
-	_ = s.db.QueryRow(`SELECT COUNT(*) FROM blocked_ips WHERE ip = ?`, ip).Scan(&n)
+	_ = s.db.QueryRow(
+		`SELECT COUNT(*) FROM blocked_ips WHERE ip = ? AND (expires_at IS NULL OR expires_at > ?)`,
+		ip, time.Now().UTC()).Scan(&n)
 	return n > 0
+}
+
+// purgeExpiredBlocks deletes auto-blocks whose TTL has passed.
+func (s *Store) purgeExpiredBlocks(now time.Time) (int, error) {
+	res, err := s.db.Exec(`DELETE FROM blocked_ips WHERE expires_at IS NOT NULL AND expires_at <= ?`, now)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
 }
 
 // ---- public share links ----
@@ -895,8 +920,8 @@ type Share struct {
 	HasPassword   bool      `json:"has_password"`
 	PasswordHash  string    `json:"-"`
 	ExpiresAt     time.Time `json:"expires_at"`
-	CreatedBy     string    `json:"created_by"`    // username (display/audit only)
-	CreatedByID   string    `json:"-"`             // creator user id (authoritative owner binding)
+	CreatedBy     string    `json:"created_by"` // username (display/audit only)
+	CreatedByID   string    `json:"-"`          // creator user id (authoritative owner binding)
 	CreatedAt     time.Time `json:"created_at"`
 	DownloadCount int       `json:"download_count"`
 	MaxDownloads  int       `json:"max_downloads"` // 0 = unlimited
@@ -995,7 +1020,9 @@ func (s *Store) deleteExpiredShares(now time.Time) (int64, error) {
 }
 
 func (s *Store) listBlockedIPs() ([]*BlockedIP, error) {
-	rows, err := s.db.Query(`SELECT ip, blocked_at, reason, COALESCE(blocked_by, '') FROM blocked_ips ORDER BY blocked_at DESC`)
+	rows, err := s.db.Query(
+		`SELECT ip, blocked_at, reason, COALESCE(blocked_by, ''), expires_at FROM blocked_ips
+		 WHERE expires_at IS NULL OR expires_at > ? ORDER BY blocked_at DESC`, time.Now().UTC())
 	if err != nil {
 		return nil, err
 	}
@@ -1003,7 +1030,7 @@ func (s *Store) listBlockedIPs() ([]*BlockedIP, error) {
 	var out []*BlockedIP
 	for rows.Next() {
 		var b BlockedIP
-		if err := rows.Scan(&b.IP, &b.BlockedAt, &b.Reason, &b.BlockedBy); err != nil {
+		if err := rows.Scan(&b.IP, &b.BlockedAt, &b.Reason, &b.BlockedBy, &b.ExpiresAt); err != nil {
 			return nil, err
 		}
 		out = append(out, &b)
